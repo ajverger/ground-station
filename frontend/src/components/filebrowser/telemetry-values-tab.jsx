@@ -52,6 +52,7 @@ export default function TelemetryValuesTab({ telemetry }) {
   const values = telemetry?.telemetry?.values || null;
   const rawFields = telemetry?.telemetry?.raw_fields || telemetry?.telemetry?.rawFields || null;
   const payload = telemetry?.telemetry;
+  const isLasarsat = payload?.satellite === 'LASARSAT';
 
   // A USP AX.25 frame can carry several independent subsystem messages. Keep
   // their values together so repeated fields (time, current, etc.) stay unambiguous.
@@ -99,6 +100,14 @@ export default function TelemetryValuesTab({ telemetry }) {
     );
   }
 
+  if (isLasarsat && payload.format === 'malformed') {
+    return <Alert severity="warning">{payload.error}</Alert>;
+  }
+
+  if (isLasarsat && payload.format === 'text') {
+    return <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>{payload.text}</Typography>;
+  }
+
   if (!values) {
     return (
       <Typography variant="body2" color="text.secondary">
@@ -109,8 +118,17 @@ export default function TelemetryValuesTab({ telemetry }) {
 
   return (
     <Box>
-      <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>{t('telemetry_values_tab.engineering_values', { defaultValue: 'Engineering Values' })}</Typography>
+      <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+        {isLasarsat
+          ? t('telemetry_values_tab.lasarsat_beacon_values', { defaultValue: 'LASARSAT {{type}} beacon values', type: payload.type })
+          : t('telemetry_values_tab.engineering_values', { defaultValue: 'Engineering Values' })}
+      </Typography>
       <Divider sx={{ mb: 2 }} />
+      {isLasarsat && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          {t('telemetry_values_tab.lasarsat_raw_values', { defaultValue: 'Values are shown as transmitted; this decoder does not apply unit scaling.' })}
+        </Alert>
+      )}
       <Box>
         <Values values={values} fieldInfo={payload?.field_info} />
       </Box>

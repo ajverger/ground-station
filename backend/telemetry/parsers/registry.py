@@ -13,6 +13,7 @@ import logging
 from typing import Any, Iterable, Tuple, Type
 
 from .colibri_s import ColibriSGeoscanAx25Parser
+from .lasarsat import LasarsatAx25Parser
 from .rs52s import RS52SGeoscanAx25Parser
 from .usp import USPParser
 
@@ -30,6 +31,7 @@ def _iter_builtin_ax25_parsers() -> Iterable[Tuple[str, Type[Any]]]:
         ("RS52S", RS52SGeoscanAx25Parser),
         ("RS67S", ColibriSGeoscanAx25Parser),
         ("COLIBRI-S", ColibriSGeoscanAx25Parser),
+        ("OK0LSR", LasarsatAx25Parser),
     )
 
 

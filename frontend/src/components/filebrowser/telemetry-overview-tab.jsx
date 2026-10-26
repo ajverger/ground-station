@@ -98,6 +98,9 @@ export default function OverviewTab({ metadata, file, telemetry, packet, ax25 })
     const geoscan = decoderConfig.geoscan || {};
     const framingParams = decoderConfig.framing_params || {};
     const telemetryParser = telemetry.parser || '';
+    // Payload parsers retain the AX.25 result while extending the parser name.
+    const hasDecodedAx25 = telemetry.success &&
+        (telemetry.protocol === 'ax25' || telemetryParser === 'ax25' || telemetryParser.startsWith('ax25+'));
 
     const isGeoscan = framing === 'geoscan' || payloadProtocol === 'proprietary';
     // Encapsulated AX.25 detection: show AX.25 frame whenever telemetry.frame carries
@@ -291,7 +294,7 @@ export default function OverviewTab({ metadata, file, telemetry, packet, ax25 })
                                     {t('telemetry_overview_tab.forward_error_correction_cr', { defaultValue: 'Forward Error Correction: CR' })} {decoder.coding_rate || metadata.decoder?.coding_rate || '4/5'}
                                 </Typography>
                             </Box>
-                            {telemetry.success && telemetry.parser === 'ax25' ? (
+                            {hasDecodedAx25 ? (
                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                     <CheckCircleIcon sx={{ color: theme.palette.success.main, fontSize: 20 }} />
                                     <Typography variant="body2">
@@ -331,7 +334,7 @@ export default function OverviewTab({ metadata, file, telemetry, packet, ax25 })
                                     {t('telemetry_overview_tab.crc_16_validated_by_hdlc_deframer', { defaultValue: 'CRC-16 validated by HDLC deframer' })}
                                 </Typography>
                             </Box>
-                            {telemetry.success && telemetry.parser === 'ax25' ? (
+                            {hasDecodedAx25 ? (
                                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                                     <CheckCircleIcon sx={{ color: theme.palette.success.main, fontSize: 20 }} />
                                     <Typography variant="body2">

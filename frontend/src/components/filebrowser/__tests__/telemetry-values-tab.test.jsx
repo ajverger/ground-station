@@ -80,3 +80,35 @@ describe('USP telemetry in the packet viewer', () => {
         expect(screen.getByText('1632')).toBeInTheDocument();
     });
 });
+
+describe('LASARSAT telemetry in the packet viewer', () => {
+    it('shows the beacon type and marks transmitted values as unscaled', () => {
+        render(<TelemetryViewerDialog open onClose={() => {}}
+            file={{filename: 'lasarsat.bin', url: '/decoded/lasarsat.bin'}}
+            metadata={{decoder: {type: 'gfsk'}, telemetry: {
+                parser: 'ax25+LasarsatAx25Parser', protocol: 'ax25', success: true,
+                telemetry: {
+                    satellite: 'LASARSAT', format: 'beacon', type: 'PSU',
+                    values: {psu_battery: 8148, psu_ch2_state: true},
+                },
+            }}} />);
+
+        fireEvent.click(screen.getByRole('tab', {name: 'Telemetry'}));
+        const panel = screen.getByRole('tabpanel');
+        expect(within(panel).getByText('LASARSAT PSU beacon values')).toBeInTheDocument();
+        expect(within(panel).getByText(/does not apply unit scaling/)).toBeInTheDocument();
+        expect(within(panel).getByText('psu_battery')).toBeInTheDocument();
+        expect(within(panel).getByText(new Intl.NumberFormat().format(8148))).toBeInTheDocument();
+        expect(within(panel).getByText('Yes')).toBeInTheDocument();
+    });
+
+    it('shows why a malformed beacon has no measurements', () => {
+        render(<TelemetryValuesTab telemetry={{telemetry: {
+            satellite: 'LASARSAT', format: 'malformed', type: 'PSU',
+            error: 'Expected 11 PSU fields, received 3',
+        }}} />);
+
+        expect(screen.getByRole('alert')).toHaveTextContent('Expected 11 PSU fields, received 3');
+        expect(screen.queryByText('Engineering Values')).not.toBeInTheDocument();
+    });
+});
