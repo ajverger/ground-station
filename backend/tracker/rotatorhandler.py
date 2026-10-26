@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 
 from common.constants import DictKeys, SocketEvents, TrackingEvents
 from controllers.rotator import RotatorController, StopRejected
+from tracker.context import live_satellite_data
 from tracking.passes import calculate_next_events
 
 logger = logging.getLogger("tracker-worker")
@@ -875,9 +876,9 @@ class RotatorHandler:
                     DictKeys.EVENT: SocketEvents.SATELLITE_TRACKING,
                     DictKeys.DATA: {
                         DictKeys.EVENTS: events,
-                        DictKeys.DATA: {
-                            "satellite_data": self.tracker.satellite_data,
-                        },
+                        # Limit toasts read identity from the same top-level field
+                        # as regular tracking updates.
+                        DictKeys.SATELLITE_DATA: live_satellite_data(self.tracker.satellite_data),
                     },
                 }
             )

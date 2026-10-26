@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from common.thumbnails import get_image_thumbnail_path
 from handlers.entities.filebrowser import (
     build_observation_bundle_item,
     build_recording_snapshot_info,
+    get_image_dimensions,
 )
 
 
@@ -20,6 +22,22 @@ def _write_png(path: Path, size=(1200, 700), color=(12, 34, 56)):
     path.parent.mkdir(parents=True, exist_ok=True)
     with Image.new("RGB", size, color=color) as image:
         image.save(path, format="PNG")
+
+
+@pytest.mark.unit
+def test_dimension_read_silences_warning_but_rejects_oversized_image(tmp_path, monkeypatch):
+    warning_image = tmp_path / "warning.png"
+    oversized_image = tmp_path / "oversized.png"
+    _write_png(warning_image, size=(11, 10))
+    _write_png(oversized_image, size=(21, 10))
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 100)
+
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always", Image.DecompressionBombWarning)
+        assert get_image_dimensions(str(warning_image)) == (11, 10)
+        assert get_image_dimensions(str(oversized_image)) == (None, None)
+
+    assert not any(item.category is Image.DecompressionBombWarning for item in emitted)
 
 
 def test_select_decoded_thumbnail_source_uses_priority_order(tmp_path):

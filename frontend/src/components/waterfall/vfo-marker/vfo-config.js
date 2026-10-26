@@ -237,11 +237,11 @@ export const DECODERS = {
         hasTextOutput: false,
         hasModeDisplay: true, // shows LoRa parameters (SF, BW, CR)
         defaultBandwidth: 125000, // Actual receiver bandwidth comes from LoRa parameters
-        bandwidthType: 'center-only', // only show center line for raw IQ
-        showBothEdges: false,
+        bandwidthType: 'double-sided',
+        showBothEdges: true,
         allowLeftEdgeDrag: false,
         allowRightEdgeDrag: false,
-        bandwidthLabel: (bw) => '',
+        bandwidthLabel: (bw) => `BW${bw / 1000}kHz`,
         lockedBandwidth: true, // bandwidth is determined by LoRa parameters, not user-adjustable
     },
     gnss: {

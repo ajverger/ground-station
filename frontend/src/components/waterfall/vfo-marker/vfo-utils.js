@@ -460,8 +460,20 @@ export const calculateBandwidthChange = (currentBandwidth, freqDelta, dragMode, 
  * @param {number} actualWidth - Actual canvas width
  * @returns {Object} Bounds and positions
  */
-export const calculateVFOFrequencyBounds = (marker, startFreq, freqRange, actualWidth) => {
-    const bandwidth = marker.bandwidth || 3000;
+export const getVFOBandwidth = (marker, decoderInfo = null) => {
+    if (marker.decoder === 'lora') {
+        // The VFO bandwidth field is only a default; LoRa's PHY bandwidth is
+        // set by decoder parameters and may differ from the active profile.
+        const override = marker.parametersEnabled ? Number(marker.parameters?.lora_bw) : NaN;
+        if (Number.isFinite(override) && override > 0) return override;
+        const reported = Number(decoderInfo?.info?.bw ?? decoderInfo?.info?.bandwidth_khz * 1000);
+        if (Number.isFinite(reported) && reported > 0) return reported;
+    }
+    return marker.bandwidth || 3000;
+};
+
+export const calculateVFOFrequencyBounds = (marker, startFreq, freqRange, actualWidth, decoderInfo = null) => {
+    const bandwidth = getVFOBandwidth(marker, decoderInfo);
     const mode = marker.mode || 'FM';
     const decoder = marker.decoder || 'none';
     const bandwidthType = getBandwidthType(mode, decoder);

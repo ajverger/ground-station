@@ -23,6 +23,7 @@ IQ recordings and waterfall snapshots stored on the filesystem.
 import asyncio
 import json
 import shutil
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -147,9 +148,13 @@ def get_image_dimensions(image_path: str) -> Tuple[Any, ...]:
         Tuple of (width, height) or (None, None) if unable to determine
     """
     try:
-        with Image.open(image_path) as img:
-            size: Tuple[Any, ...] = img.size
-            return size
+        # Listing only reads the header; thumbnail decoding has its own pixel limit.
+        # Keep Pillow's oversized-image error while avoiding warnings on valid waterfalls.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+            with Image.open(image_path) as img:
+                size: Tuple[Any, ...] = img.size
+                return size
     except Exception:
         return (None, None)
 

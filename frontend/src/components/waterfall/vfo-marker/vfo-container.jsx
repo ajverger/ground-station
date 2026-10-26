@@ -646,7 +646,7 @@ const VFOMarkersContainer = ({
             const decoderInfo = getDecoderInfoForVFO(parseInt(markerIdx));
 
             // Use the VFO's configured mode directly
-            const bounds = calculateVFOFrequencyBounds(marker, startFreq, freqRange, actualWidth);
+            const bounds = calculateVFOFrequencyBounds(marker, startFreq, freqRange, actualWidth, decoderInfo);
 
             // Skip if the marker is outside the visible range
             if (bounds.markerHighFreq < startFreq || bounds.markerLowFreq > endFreq) {
@@ -756,7 +756,7 @@ const VFOMarkersContainer = ({
             // Get effective mode using centralized config (handles decoder overrides)
             const decoderInfo = getDecoderInfoForVFO(parseInt(key));
             // Use the VFO's configured mode directly
-            const bounds = calculateVFOFrequencyBounds(marker, startFreq, freqRange, actualWidth);
+            const bounds = calculateVFOFrequencyBounds(marker, startFreq, freqRange, actualWidth, decoderInfo);
             const { leftEdgeX, rightEdgeX, centerX, mode, bandwidth } = bounds;
 
             // Check label (y between 0-20px with enlarged touch area) - treat as body drag
