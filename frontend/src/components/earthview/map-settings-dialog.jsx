@@ -38,7 +38,7 @@ import {
     setEnableMapZooming,
 } from "./earthview-slice.jsx";
 
-function MapSettingsIslandDialog({updateBackend}) {
+function MapSettingsIslandDialog({updateBackend, container}) {
     const dispatch = useDispatch();
     const { t } = useTranslation('earthview');
     const {
@@ -70,6 +70,7 @@ function MapSettingsIslandDialog({updateBackend}) {
             <Dialog
                 open={openMapSettingsDialog}
                 onClose={handleCloseDialog}
+                container={container}
                 fullWidth
                 maxWidth="sm"
                 PaperProps={{

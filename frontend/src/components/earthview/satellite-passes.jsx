@@ -32,7 +32,7 @@ import {
     TitleBar,
 } from "../common/common.jsx";
 import RowContextMenu from "./rowcontextmenu.jsx";
-import {DataGrid, gridClasses} from "@mui/x-data-grid";
+import {DataGrid, gridClasses, useGridApiRef} from "@mui/x-data-grid";
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import ArrowUpwardRoundedIcon from '@mui/icons-material/ArrowUpwardRounded';
 import RadioButtonCheckedIcon from '@mui/icons-material/RadioButtonChecked';
@@ -55,7 +55,6 @@ import {
     setOpenPassesTableSettingsDialog,
 } from './earthview-slice.jsx';
 import {Typography, Box, IconButton, Tooltip, Button, useMediaQuery, useTheme} from '@mui/material';
-import {useGridApiRef} from '@mui/x-data-grid';
 import {alpha, darken, lighten, styled} from '@mui/material/styles';
 import {Chip} from "@mui/material";
 import {useStore} from 'react-redux';
@@ -68,6 +67,7 @@ import SettingsIcon from '@mui/icons-material/Settings';
 import PassesTableSettingsDialog from './passes-table-settings-dialog.jsx';
 import { useUserTimeSettings } from '../../hooks/useUserTimeSettings.jsx';
 import TargetNumberIcon from '../common/target-number-icon.jsx';
+import GridPaginationActions from '../common/grid-pagination-actions.jsx';
 import {formatAlternativeSatelliteNames} from '../common/satellite-names.js';
 import { setRotator, setTrackerId, setTrackingStateInBackend } from "../target/target-slice.jsx";
 import { useTargetRotatorSelectionDialog } from "../target/use-target-rotator-selection-dialog.jsx";
@@ -884,6 +884,9 @@ const MemoizedStyledDataGrid = React.memo(function MemoizedStyledDataGrid({
             fullWidth={true}
             loading={passesLoading}
             slotProps={{
+                basePagination: {
+                    ActionsComponent: GridPaginationActions,
+                },
                 loadingOverlay: {
                     variant: 'linear-progress',
                     noRowsVariant: 'linear-progress',

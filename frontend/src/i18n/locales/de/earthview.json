@@ -172,6 +172,7 @@
     "go_home": "Zur Startposition",
     "go_to_center": "Zur Kartenmitte",
     "go_fullscreen": "Vollbildmodus",
+    "exit_fullscreen": "Vollbildmodus beenden",
     "map_settings": "Karteneinstellungen",
     "zoom_in": "Vergrößern",
     "zoom_out": "Verkleinern"

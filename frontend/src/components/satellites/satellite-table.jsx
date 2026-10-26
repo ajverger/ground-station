@@ -53,12 +53,9 @@ import {useDispatch, useSelector} from "react-redux";
 import { toast } from '../../utils/toast-with-timestamp.jsx';
 import {
     DataGrid,
-    gridPageCountSelector,
-    useGridApiContext,
-    useGridSelector,
     gridClasses
 } from '@mui/x-data-grid';
-import MuiPagination from '@mui/material/Pagination';
+import GridPaginationActions from '../common/grid-pagination-actions.jsx';
 import {
     betterDateTimes,
     betterStatusValue,
@@ -282,45 +279,6 @@ const formatFrequency = (frequency) => {
     if (frequency >= 1_000_000) return `${(frequency / 1_000_000).toFixed(3)} MHz`;
     return `${(frequency / 1_000).toFixed(3)} kHz`;
 };
-
-function Pagination({page, onPageChange, className}) {
-    const apiRef = useGridApiContext();
-    const pageCount = useGridSelector(apiRef, gridPageCountSelector);
-    const [gridWidth, setGridWidth] = useState(0);
-
-    useEffect(() => {
-        const gridElement = apiRef.current.rootElementRef?.current;
-        if (!gridElement) return undefined;
-
-        const updateWidth = () => setGridWidth(gridElement.clientWidth);
-        updateWidth();
-
-        if (typeof ResizeObserver === 'undefined') return undefined;
-        const observer = new ResizeObserver(updateWidth);
-        observer.observe(gridElement);
-        return () => observer.disconnect();
-    }, [apiRef]);
-
-    // Keep the page controls inside the footer while showing more nearby
-    // destinations whenever the table has room for them.
-    const boundaryCount = gridWidth > 0 && gridWidth < 650 ? 0 : 1;
-    const siblingCount = gridWidth >= 1200 ? 2 : gridWidth >= 900 ? 1 : 0;
-
-    return (
-        <MuiPagination
-            color="primary"
-            className={className}
-            count={pageCount}
-            page={page + 1}
-            boundaryCount={boundaryCount}
-            siblingCount={siblingCount}
-            size={gridWidth > 0 && gridWidth < 850 ? 'small' : 'medium'}
-            onChange={(event, newPage) => {
-                onPageChange(event, newPage - 1);
-            }}
-        />
-    );
-}
 
 const SatelliteTable = React.memo(function SatelliteTable() {
     const dispatch = useDispatch();
@@ -1218,7 +1176,7 @@ const SatelliteTable = React.memo(function SatelliteTable() {
                     checkboxSelection={true}
                     slotProps={{
                         basePagination: {
-                            ActionsComponent: Pagination,
+                            ActionsComponent: GridPaginationActions,
                         },
                         loadingOverlay: {
                             variant: 'linear-progress',

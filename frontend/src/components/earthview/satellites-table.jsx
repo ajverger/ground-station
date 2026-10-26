@@ -59,6 +59,7 @@ import { toast } from '../../utils/toast-with-timestamp.jsx';
 import SatellitesTableSettingsDialog from './satellites-table-settings-dialog.jsx';
 import IconButton from '@mui/material/IconButton';
 import TargetNumberIcon from '../common/target-number-icon.jsx';
+import GridPaginationActions from '../common/grid-pagination-actions.jsx';
 import PassTransmitterLinksCell from '../common/pass-transmitter-links-cell.jsx';
 import {formatAlternativeSatelliteNames} from '../common/satellite-names.js';
 import { setRotator, setTrackerId, setTrackingStateInBackend } from "../target/target-slice.jsx";
@@ -543,6 +544,9 @@ const MemoizedStyledDataGrid = React.memo(({
         <StyledDataGrid
             loading={loadingSatellites}
             slotProps={{
+                basePagination: {
+                    ActionsComponent: GridPaginationActions,
+                },
                 loadingOverlay: {
                     variant: 'linear-progress',
                     noRowsVariant: 'linear-progress',

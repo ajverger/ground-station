@@ -172,6 +172,7 @@
     "go_home": "Retour à l'accueil",
     "go_to_center": "Aller au centre de la carte",
     "go_fullscreen": "Passer en plein écran",
+    "exit_fullscreen": "Sortir du plein écran",
     "map_settings": "Paramètres de la carte",
     "zoom_in": "Zoom dans",
     "zoom_out": "Zoom arrière"

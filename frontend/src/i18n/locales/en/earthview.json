@@ -190,6 +190,7 @@
     "go_home": "Go home",
     "go_to_center": "Go to center of map",
     "go_fullscreen": "Go fullscreen",
+    "exit_fullscreen": "Exit fullscreen",
     "map_settings": "Map settings"
   },
   "weather_errors": {

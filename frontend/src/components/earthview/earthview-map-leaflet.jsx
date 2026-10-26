@@ -30,13 +30,9 @@ import {
     useMapEvents,
 } from 'react-leaflet';
 import L from 'leaflet';
-import {Box, Fab, useTheme, Typography, Tooltip, IconButton} from '@mui/material';
-import HomeIcon from '@mui/icons-material/Home';
-import FullscreenIcon from '@mui/icons-material/Fullscreen';
-import FilterCenterFocusIcon from '@mui/icons-material/FilterCenterFocus';
+import {Box, Fab, useTheme, Typography} from '@mui/material';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
-import SettingsIcon from '@mui/icons-material/Settings';
 import {useDispatch, useSelector} from 'react-redux';
 import { useTranslation } from 'react-i18next';
 import {
@@ -58,6 +54,8 @@ import {
     islandTitleBarSx,
 } from '../common/common.jsx';
 import MapSettingsIslandDialog from './map-settings-dialog.jsx';
+import MapTitleControls from './map-title-controls.jsx';
+import useMapIslandFullscreen from './use-map-island-fullscreen.js';
 import CoordinateGrid from '../common/mercator-grid.jsx';
 import SatelliteTrackSuggestion from './map-target-button.jsx';
 import {
@@ -111,52 +109,6 @@ const earthViewVisibleSatelliteIcon = L.divIcon({
     iconSize: satelliteIcon2.options.iconSize,
     iconAnchor: [10, 10],
     popupAnchor: satelliteIcon2.options.popupAnchor,
-});
-
-const CenterHomeButton = React.memo(function CenterHomeButton() {
-    const { t } = useTranslation('earthview');
-    const {location} = useSelector((state) => state.location);
-
-    const handleClick = () => {
-        if (location && location.lat != null && location.lon != null) {
-            MapObject.setView([location.lat, location.lon], MapObject.getZoom());
-        }
-    };
-
-    return (
-        <Fab size="small" color="primary" aria-label={t('map_controls.go_home')} onClick={handleClick} disabled={!location}>
-            <HomeIcon/>
-        </Fab>
-    );
-});
-
-const CenterMapButton = React.memo(function CenterMapButton() {
-    const { t } = useTranslation('earthview');
-    const targetCoordinates = [0, 0];
-
-    const handleClick = () => {
-        MapObject.setView(targetCoordinates, MapObject.getZoom());
-    };
-
-    return (
-        <Fab size="small" color="primary" aria-label={t('map_controls.go_to_center')} onClick={handleClick}>
-            <FilterCenterFocusIcon/>
-        </Fab>
-    );
-});
-
-const FullscreenMapButton = React.memo(function FullscreenMapButton() {
-    const { t } = useTranslation('earthview');
-
-    const handleMapFullscreen = () => {
-        MapObject.toggleFullscreen();
-    };
-
-    return (
-        <Fab size="small" color="primary" aria-label={t('map_controls.go_fullscreen')} onClick={handleMapFullscreen}>
-            <FullscreenIcon/>
-        </Fab>
-    );
 });
 
 const ZoomInButton = React.memo(function ZoomInButton() {
@@ -334,7 +286,6 @@ const LeafletEarthViewMapRenderer = ({
     });
     const {location} = useSelector((state) => state.location);
     const updateTimeRef = useRef(null);
-    const controlsBoxRef = useRef(null);
     const zoomControlsRef = useRef(null);
     const arrowControlsRef = useRef(null);
     const elevationHistoryRef = useRef({}); // Store elevation history for each satellite
@@ -353,6 +304,23 @@ const LeafletEarthViewMapRenderer = ({
         dispatch(setOpenMapSettingsDialog(true));
     }, [dispatch]);
 
+    const handleCenterHome = useCallback(() => {
+        if (!MapObject || location?.lat == null || location?.lon == null) return;
+        MapObject.setView([location.lat, location.lon], MapObject.getZoom());
+    }, [location]);
+
+    const handleCenterMap = useCallback(() => {
+        if (!MapObject) return;
+        MapObject.setView([0, 0], MapObject.getZoom());
+    }, []);
+
+    const resizeMap = useCallback(() => {
+        if (MapObject?._container && document.contains(MapObject._container)) {
+            MapObject.invalidateSize({pan: false, debounceMoveend: true});
+        }
+    }, []);
+    const {islandRef, isFullscreen, toggleFullscreen} = useMapIslandFullscreen(resizeMap);
+
     // Subscribe to map events
     function MapEventComponent({handleSetMapZoomLevel}) {
         const mapEvents = useMapEvents({
@@ -363,7 +331,6 @@ const LeafletEarthViewMapRenderer = ({
             click: (e) => {
                 const target = e.originalEvent?.target;
                 if (
-                    (controlsBoxRef.current && target && controlsBoxRef.current.contains(target)) ||
                     (zoomControlsRef.current && target && zoomControlsRef.current.contains(target)) ||
                     (arrowControlsRef.current && target && arrowControlsRef.current.contains(target))
                 ) {
@@ -889,30 +856,36 @@ const LeafletEarthViewMapRenderer = ({
     };
 
     return (
-        <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+        <Box
+            ref={islandRef}
+            sx={{
+                height: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                minHeight: 0,
+                '&:fullscreen': {width: '100vw', height: '100vh', bgcolor: 'background.paper'},
+                '&:-webkit-full-screen': {width: '100vw', height: '100vh', bgcolor: 'background.paper'},
+            }}
+        >
             <TitleBar
                 className={getClassNamesBasedOnGridEditing(gridEditable, ['window-title-bar'])}
                 sx={islandTitleBarSx}
             >
-                <Box sx={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%'}}>
-                    <Box sx={{display: 'flex', alignItems: 'center'}}>
-                        <Typography variant="subtitle2" sx={{fontWeight: 'bold'}}>
+                <Box sx={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', minWidth: 0}}>
+                    <Box sx={{display: 'flex', alignItems: 'center', flex: 1, minWidth: 0}}>
+                        <Typography variant="subtitle2" sx={{fontWeight: 'bold', minWidth: 0}} noWrap>
                             {t('title')}
                         </Typography>
                     </Box>
-                    <Box sx={{ display: 'flex', gap: 0.5 }}>
-                        <Tooltip title={t('map_settings.title')}>
-                            <span>
-                                <IconButton
-                                    size="small"
-                                    onClick={handleOpenSettings}
-                                    sx={{ padding: '2px' }}
-                                >
-                                    <SettingsIcon fontSize="small" />
-                                </IconButton>
-                            </span>
-                        </Tooltip>
-                    </Box>
+                    <MapTitleControls
+                        homeDisabled={location?.lat == null || location?.lon == null}
+                        isFullscreen={isFullscreen}
+                        onHome={handleCenterHome}
+                        onCenter={handleCenterMap}
+                        onFullscreen={toggleFullscreen}
+                        onSettings={handleOpenSettings}
+                        tooltipContainer={isFullscreen ? islandRef.current : undefined}
+                    />
                 </Box>
             </TitleBar>
             <Box sx={{ position: 'relative', width: '100%', flex: 1, minHeight: 0 }}>
@@ -930,7 +903,6 @@ const LeafletEarthViewMapRenderer = ({
                 <MapContainer
                     key={`earth-view-map-${normalizedMapEngine}-${selectedTileLayer.id}-${selectedTileLayer.projection || 'EPSG3857'}-${enableMapDragging}-${enableMapZooming}`}
                     className="earth-view-map"
-                    fullscreenControl={true}
                     center={[0, 0]}
                     crs={mapCrs}
                     zoom={mapZoomLevel}
@@ -972,17 +944,8 @@ const LeafletEarthViewMapRenderer = ({
                     </Box>
                 ) : null}
 
-                <Box
-                    ref={controlsBoxRef}
-                    sx={{'& > :not(style)': {m: 1}}}
-                    style={{right: 5, top: 5, position: 'absolute'}}
-                >
-                    <CenterHomeButton/>
-                    <CenterMapButton/>
-                    <FullscreenMapButton/>
-                </Box>
-
                 <MapSettingsIslandDialog
+                    container={isFullscreen ? islandRef.current : undefined}
                     updateBackend={() => {
                         const key = 'earth-view-map-settings';
                         dispatch(setEarthViewMapSetting({socket, key: key}));

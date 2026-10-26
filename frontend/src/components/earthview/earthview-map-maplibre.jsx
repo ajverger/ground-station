@@ -20,15 +20,11 @@
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import Map, {Marker, Popup, Source, Layer} from 'react-map-gl/maplibre';
 import { maplibregl } from '../common/maplibre.js';
-import {Box, Fab, useTheme, Typography, Tooltip, IconButton, Button} from '@mui/material';
-import HomeIcon from '@mui/icons-material/Home';
-import FullscreenIcon from '@mui/icons-material/Fullscreen';
-import FilterCenterFocusIcon from '@mui/icons-material/FilterCenterFocus';
+import {Box, Fab, useTheme, Typography, IconButton, Button} from '@mui/material';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import TrackChangesIcon from '@mui/icons-material/TrackChanges';
 import InfoIcon from '@mui/icons-material/Info';
-import SettingsIcon from '@mui/icons-material/Settings';
 import {useDispatch, useSelector} from 'react-redux';
 import {useTranslation} from 'react-i18next';
 import {
@@ -54,6 +50,8 @@ import {
     islandTitleBarSx,
 } from '../common/common.jsx';
 import MapSettingsIslandDialog from './map-settings-dialog.jsx';
+import MapTitleControls from './map-title-controls.jsx';
+import useMapIslandFullscreen from './use-map-island-fullscreen.js';
 import {
     getSatelliteCoverageCircle,
 } from '../common/tracking-logic.jsx';
@@ -372,7 +370,6 @@ const MapLibreEarthViewMapRenderer = ({
     const trackerInstances = useSelector((state) => state.trackerInstances?.instances || []);
 
     const mapRef = useRef(null);
-    const controlsBoxRef = useRef(null);
     const arrowControlsRef = useRef(null);
     const markerClickInProgressRef = useRef(false);
     const updateTimeRef = useRef(null);
@@ -780,15 +777,8 @@ const MapLibreEarthViewMapRenderer = ({
         liveMap.flyTo({center: [0, 0], zoom: liveMap.getZoom()});
     };
 
-    const handleFullscreen = () => {
-        const container = liveMap?.getContainer();
-        if (!container) return;
-        if (!document.fullscreenElement) {
-            container.requestFullscreen?.();
-        } else {
-            document.exitFullscreen?.();
-        }
-    };
+    const resizeMap = useCallback(() => mapRef.current?.getMap()?.resize(), []);
+    const {islandRef, isFullscreen, toggleFullscreen} = useMapIslandFullscreen(resizeMap);
 
     const handleZoomIn = () => {
         if (!liveMap) return;
@@ -807,26 +797,36 @@ const MapLibreEarthViewMapRenderer = ({
     };
 
     return (
-        <Box sx={{height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0}}>
+        <Box
+            ref={islandRef}
+            sx={{
+                height: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                minHeight: 0,
+                '&:fullscreen': {width: '100vw', height: '100vh', bgcolor: 'background.paper'},
+                '&:-webkit-full-screen': {width: '100vw', height: '100vh', bgcolor: 'background.paper'},
+            }}
+        >
             <TitleBar
                 className={getClassNamesBasedOnGridEditing(gridEditable, ['window-title-bar'])}
                 sx={islandTitleBarSx}
             >
-                <Box sx={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%'}}>
-                    <Typography variant="subtitle2" sx={{fontWeight: 'bold'}}>
-                        {t('title')}
-                    </Typography>
-                    <Tooltip title={t('map_settings.title')}>
-                        <span>
-                            <IconButton
-                                size="small"
-                                onClick={handleOpenSettings}
-                                sx={{padding: '2px'}}
-                            >
-                                <SettingsIcon fontSize="small"/>
-                            </IconButton>
-                        </span>
-                    </Tooltip>
+                <Box sx={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', minWidth: 0}}>
+                    <Box sx={{display: 'flex', alignItems: 'center', flex: 1, minWidth: 0}}>
+                        <Typography variant="subtitle2" sx={{fontWeight: 'bold', minWidth: 0}} noWrap>
+                            {t('title')}
+                        </Typography>
+                    </Box>
+                    <MapTitleControls
+                        homeDisabled={location?.lat == null || location?.lon == null}
+                        isFullscreen={isFullscreen}
+                        onHome={handleCenterHome}
+                        onCenter={handleCenterMap}
+                        onFullscreen={toggleFullscreen}
+                        onSettings={handleOpenSettings}
+                        tooltipContainer={isFullscreen ? islandRef.current : undefined}
+                    />
                 </Box>
             </TitleBar>
 
@@ -920,7 +920,7 @@ const MapLibreEarthViewMapRenderer = ({
                             markerClickInProgressRef.current = false;
                             return;
                         }
-                        if (controlsBoxRef.current?.contains(target) || arrowControlsRef.current?.contains(target)) {
+                        if (arrowControlsRef.current?.contains(target)) {
                             return;
                         }
                         dispatch(setSelectedSatelliteId(null));
@@ -1259,22 +1259,6 @@ const MapLibreEarthViewMapRenderer = ({
                     })}
                 </Map>
 
-                <Box
-                    ref={controlsBoxRef}
-                    sx={{'& > :not(style)': {m: 1}}}
-                    style={{right: 5, top: 5, position: 'absolute'}}
-                >
-                    <Fab size="small" color="primary" aria-label={t('map_controls.go_home')} onClick={handleCenterHome} disabled={!location}>
-                        <HomeIcon/>
-                    </Fab>
-                    <Fab size="small" color="primary" aria-label={t('map_controls.go_to_center')} onClick={handleCenterMap}>
-                        <FilterCenterFocusIcon/>
-                    </Fab>
-                    <Fab size="small" color="primary" aria-label={t('map_controls.go_fullscreen')} onClick={handleFullscreen}>
-                        <FullscreenIcon/>
-                    </Fab>
-                </Box>
-
                 {!enableMapZooming ? (
                     <Box
                         sx={{'& > :not(style)': {m: 1}, display: 'flex', flexDirection: 'column'}}
@@ -1290,6 +1274,7 @@ const MapLibreEarthViewMapRenderer = ({
                 ) : null}
 
                 <MapSettingsIslandDialog
+                    container={isFullscreen ? islandRef.current : undefined}
                     updateBackend={() => {
                         const key = 'earth-view-map-settings';
                         dispatch(setEarthViewMapSetting({socket, key}));

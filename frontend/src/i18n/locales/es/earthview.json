@@ -172,6 +172,7 @@
     "go_home": "Ir al inicio",
     "go_to_center": "Ir al centro del mapa",
     "go_fullscreen": "Pantalla completa",
+    "exit_fullscreen": "Salir de pantalla completa",
     "map_settings": "Configuración del mapa",
     "zoom_in": "Zoom en",
     "zoom_out": "Fuera."
