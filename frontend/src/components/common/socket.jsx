@@ -42,11 +42,10 @@ export const redactSocketDebugArgs = (eventName, args) => {
 // Provider component
 export const SocketProvider = ({ children }) => {
     const [socket, setSocket] = useState(null);
-    const [collectStats, setCollectStats] = useState(false);
-    // The connection callback outlives a popover opening. Read its current
-    // collection state without reconnecting the socket when that state changes.
+    const [transportName, setTransportName] = useState('connecting...');
+    // Collection belongs to the popover viewing window. A ref lets the socket
+    // listeners read its current state without re-registering on open/close.
     const collectStatsRef = useRef(false);
-    collectStatsRef.current = collectStats;
     // Authentication now relies on HttpOnly cookies. We still track an epoch key so
     // the socket reconnects after login/logout/setup transitions.
     const [authEpoch, setAuthEpoch] = useState('anonymous');
@@ -108,6 +107,47 @@ export const SocketProvider = ({ children }) => {
     // Store original emit function
     const originalEmitRef = useRef(null);
 
+    const setCollectStats = useCallback((collect) => {
+        if (!collect) {
+            if (!collectStatsRef.current) return;
+            collectStatsRef.current = false;
+            trafficStatsRef.current = { ...trafficStatsRef.current, collecting: false };
+            return;
+        }
+        if (collectStatsRef.current) return;
+
+        const now = Date.now();
+        collectStatsRef.current = true;
+        applicationStats.current = {
+            bytesReceived: 0,
+            bytesSent: 0,
+            messagesReceived: 0,
+            messagesSent: 0
+        };
+        previousStats.current = {
+            bytesSent: 0,
+            bytesReceived: 0,
+            messagesSent: 0,
+            messagesReceived: 0,
+            timestamp: now
+        };
+        trafficStatsRef.current = {
+            ...trafficStatsRef.current,
+            engine: {
+                ...trafficStatsRef.current.engine,
+                bytesReceived: 0,
+                bytesSent: 0,
+                packetsReceived: 0,
+                packetsSent: 0
+            },
+            rates: {
+                bytesPerSecond: { sent: 0, received: 0 },
+                packetsPerSecond: { sent: 0, received: 0 }
+            },
+            collecting: true
+        };
+    }, []);
+
     // Debug listeners for event log console
     // Each entry: { fn: (msg)=>void, includeOutgoing: boolean }
     const debugListenersRef = useRef(new Set());
@@ -127,7 +167,7 @@ export const SocketProvider = ({ children }) => {
 
     // Simplified helper for Socket.IO binary streams
     const calculateMessageSize = useCallback((data) => {
-        if (!collectStats) return 0;
+        if (!collectStatsRef.current) return 0;
 
         try {
             // Socket.IO binary data is typically sent as ArrayBuffer or Buffer
@@ -178,11 +218,11 @@ export const SocketProvider = ({ children }) => {
                 (typeof Buffer !== 'undefined' && data instanceof Buffer) ? data.length :
                     1024; // 1KB fallback
         }
-    }, [collectStats]);
+    }, []);
 
     // Track application-level traffic
     const trackApplicationTraffic = useCallback((type, size) => {
-        if (!collectStats) return;
+        if (!collectStatsRef.current) return;
 
         if (type === 'sent') {
             applicationStats.current.bytesSent += size;
@@ -191,111 +231,96 @@ export const SocketProvider = ({ children }) => {
             applicationStats.current.bytesReceived += size;
             applicationStats.current.messagesReceived += 1;
         }
-    }, [collectStats]);
+    }, []);
 
-    // Update traffic stats once per second
-    useEffect(() => {
-        if (!socket) return;
+    // The popover samples this once per displayed frame; no timer runs while closed.
+    const sampleTrafficStats = useCallback(() => {
+        if (!socket?.connected) return trafficStatsRef.current;
 
-        const updateTrafficStats = () => {
-            if (!socket.connected) {
-                return;
-            }
+        const now = Date.now();
+        const manager = socket.io;
 
-            const now = Date.now();
-            const manager = socket.io;
+        // Get current application stats (only if collecting)
+        const currentStats = collectStatsRef.current ? {
+            bytesReceived: applicationStats.current.bytesReceived,
+            bytesSent: applicationStats.current.bytesSent,
+            packetsReceived: applicationStats.current.messagesReceived,
+            packetsSent: applicationStats.current.messagesSent,
+            upgradeAttempts: trafficStatsRef.current.engine.upgradeAttempts
+        } : {
+            bytesReceived: 0,
+            bytesSent: 0,
+            packetsReceived: 0,
+            packetsSent: 0,
+            upgradeAttempts: trafficStatsRef.current.engine.upgradeAttempts
+        };
 
-            // Get current application stats (only if collecting)
-            const currentStats = collectStats ? {
-                bytesReceived: applicationStats.current.bytesReceived,
-                bytesSent: applicationStats.current.bytesSent,
-                packetsReceived: applicationStats.current.messagesReceived,
-                packetsSent: applicationStats.current.messagesSent,
-                upgradeAttempts: 0
-            } : {
-                bytesReceived: 0,
-                bytesSent: 0,
-                packetsReceived: 0,
-                packetsSent: 0,
-                upgradeAttempts: 0
-            };
+        // Get transport and manager info (always available)
+        const transportInfo = {
+            name: socket.io.engine?.transport?.name || 'unknown',
+            query: socket.io.engine?.transport?.query || {},
+            readyState: socket.io.engine?.readyState || 'unknown'
+        };
 
-            // Get transport and manager info (always available)
-            const transportInfo = {
-                name: socket.io.engine?.transport?.name || 'unknown',
-                query: socket.io.engine?.transport?.query || {},
-                readyState: socket.io.engine?.readyState || 'unknown'
-            };
+        const managerInfo = {
+            readyState: manager?.readyState || 'unknown',
+            reconnecting: manager?.reconnecting || false,
+            reconnectAttempts: manager?.reconnection ? manager._reconnectionAttempts || 0 : 0
+        };
 
-            const managerInfo = {
-                readyState: manager?.readyState || 'unknown',
-                reconnecting: manager?.reconnecting || false,
-                reconnectAttempts: manager?.reconnection ? manager._reconnectionAttempts || 0 : 0
-            };
+        // Calculate rates (only if collecting)
+        const prev = previousStats.current;
+        const timeDelta = (now - prev.timestamp) / 1000;
 
-            // Calculate rates (only if collecting)
-            const prev = previousStats.current;
-            const timeDelta = (now - prev.timestamp) / 1000;
+        let rates = {
+            bytesPerSecond: { sent: 0, received: 0 },
+            packetsPerSecond: { sent: 0, received: 0 }
+        };
 
-            let rates = {
-                bytesPerSecond: { sent: 0, received: 0 },
-                packetsPerSecond: { sent: 0, received: 0 }
-            };
+        if (collectStatsRef.current && timeDelta > 0) {
+            const bytesSentDiff = currentStats.bytesSent - prev.bytesSent;
+            const bytesReceivedDiff = currentStats.bytesReceived - prev.bytesReceived;
+            const messagesSentDiff = currentStats.packetsSent - prev.messagesSent;
+            const messagesReceivedDiff = currentStats.packetsReceived - prev.messagesReceived;
 
-            if (collectStats && timeDelta > 0) {
-                const bytesSentDiff = currentStats.bytesSent - prev.bytesSent;
-                const bytesReceivedDiff = currentStats.bytesReceived - prev.bytesReceived;
-                const messagesSentDiff = currentStats.packetsSent - prev.messagesSent;
-                const messagesReceivedDiff = currentStats.packetsReceived - prev.messagesReceived;
-
-                rates = {
-                    bytesPerSecond: {
-                        sent: Math.max(0, Math.round(bytesSentDiff / timeDelta)),
-                        received: Math.max(0, Math.round(bytesReceivedDiff / timeDelta))
-                    },
-                    packetsPerSecond: {
-                        sent: Math.max(0, Math.round(messagesSentDiff / timeDelta)),
-                        received: Math.max(0, Math.round(messagesReceivedDiff / timeDelta))
-                    }
-                };
-            }
-
-            // Update ref directly (no re-render)
-            trafficStatsRef.current = {
-                engine: currentStats,
-                transport: transportInfo,
-                manager: managerInfo,
-                rates: rates,
-                session: {
-                    start: trafficStatsRef.current.session.start,
-                    duration: now - trafficStatsRef.current.session.start,
-                    lastUpdate: now
+            rates = {
+                bytesPerSecond: {
+                    sent: Math.max(0, Math.round(bytesSentDiff / timeDelta)),
+                    received: Math.max(0, Math.round(bytesReceivedDiff / timeDelta))
                 },
-                collecting: collectStats
+                packetsPerSecond: {
+                    sent: Math.max(0, Math.round(messagesSentDiff / timeDelta)),
+                    received: Math.max(0, Math.round(messagesReceivedDiff / timeDelta))
+                }
             };
+        }
 
-            // Update previous values for next rate calculation (only if collecting)
-            if (collectStats) {
-                previousStats.current = {
-                    bytesSent: currentStats.bytesSent,
-                    bytesReceived: currentStats.bytesReceived,
-                    messagesSent: currentStats.packetsSent,
-                    messagesReceived: currentStats.packetsReceived,
-                    timestamp: now
-                };
-            }
+        // Update ref directly (no re-render)
+        trafficStatsRef.current = {
+            engine: currentStats,
+            transport: transportInfo,
+            manager: managerInfo,
+            rates: rates,
+            session: {
+                start: trafficStatsRef.current.session.start,
+                duration: now - trafficStatsRef.current.session.start,
+                lastUpdate: now
+            },
+            collecting: collectStatsRef.current
         };
 
-        // Update immediately
-        updateTrafficStats();
-
-        // Then update every second
-        const interval = setInterval(updateTrafficStats, 1000);
-
-        return () => {
-            clearInterval(interval);
-        };
-    }, [socket, collectStats]);
+        // Update previous values for next rate calculation (only if collecting)
+        if (collectStatsRef.current) {
+            previousStats.current = {
+                bytesSent: currentStats.bytesSent,
+                bytesReceived: currentStats.bytesReceived,
+                messagesSent: currentStats.packetsSent,
+                messagesReceived: currentStats.packetsReceived,
+                timestamp: now
+            };
+        }
+        return trafficStatsRef.current;
+    }, [socket]);
 
     // Track socket traffic at application level - controlled by collectStats flag
     useEffect(() => {
@@ -309,7 +334,7 @@ export const SocketProvider = ({ children }) => {
         // Unified emit wrapper: handles stats (if enabled) and debug notifications (if any)
         socket.emit = function(eventName, ...args) {
             try {
-                if (collectStats) {
+                if (collectStatsRef.current) {
                     const messageSize = calculateMessageSize([eventName, ...args]);
                     trackApplicationTraffic('sent', messageSize);
                 }
@@ -331,7 +356,7 @@ export const SocketProvider = ({ children }) => {
         // Track all incoming messages using onAny
         const handleIncomingMessage = (eventName, ...args) => {
             try {
-                if (collectStats) {
+                if (collectStatsRef.current) {
                     const messageSize = calculateMessageSize([eventName, ...args]);
                     trackApplicationTraffic('received', messageSize);
                 }
@@ -355,56 +380,7 @@ export const SocketProvider = ({ children }) => {
                 socket.emit = originalEmitRef.current;
             }
         };
-    }, [socket, collectStats, calculateMessageSize, trackApplicationTraffic]);
-
-    // Reset stats when collectStats changes
-    useEffect(() => {
-        if (collectStats) {
-            const now = Date.now();
-            console.info('Starting traffic collection');
-
-            // Reset application stats
-            applicationStats.current = {
-                bytesReceived: 0,
-                bytesSent: 0,
-                messagesReceived: 0,
-                messagesSent: 0
-            };
-
-            // Reset previous stats for rate calculation
-            previousStats.current = {
-                bytesSent: 0,
-                bytesReceived: 0,
-                messagesSent: 0,
-                messagesReceived: 0,
-                timestamp: now
-            };
-
-            // Totals and rates describe this popover viewing window. The
-            // connection duration remains tied to the actual socket session.
-            trafficStatsRef.current = {
-                ...trafficStatsRef.current,
-                engine: {
-                    ...trafficStatsRef.current.engine,
-                    bytesReceived: 0,
-                    bytesSent: 0,
-                    packetsReceived: 0,
-                    packetsSent: 0
-                },
-                rates: {
-                    bytesPerSecond: { sent: 0, received: 0 },
-                    packetsPerSecond: { sent: 0, received: 0 }
-                },
-                collecting: true
-            };
-        } else {
-            console.info('Stopping traffic collection');
-            trafficStatsRef.current = {
-                ...trafficStatsRef.current,
-                collecting: false
-            };
-        }
-    }, [collectStats]);
+    }, [socket, calculateMessageSize, trackApplicationTraffic]);
 
     // Get Socket.IO engine stats (for compatibility, but will use our application stats)
     const getSocketIOEngineStats = useCallback(() => {
@@ -414,10 +390,10 @@ export const SocketProvider = ({ children }) => {
 
             return {
                 engine: {
-                    bytesReceived: collectStats ? applicationStats.current.bytesReceived : 0,
-                    bytesSent: collectStats ? applicationStats.current.bytesSent : 0,
-                    packetsReceived: collectStats ? applicationStats.current.messagesReceived : 0,
-                    packetsSent: collectStats ? applicationStats.current.messagesSent : 0,
+                    bytesReceived: collectStatsRef.current ? applicationStats.current.bytesReceived : 0,
+                    bytesSent: collectStatsRef.current ? applicationStats.current.bytesSent : 0,
+                    packetsReceived: collectStatsRef.current ? applicationStats.current.messagesReceived : 0,
+                    packetsSent: collectStatsRef.current ? applicationStats.current.messagesSent : 0,
                     upgradeAttempts: 0
                 },
                 transport: {
@@ -433,10 +409,11 @@ export const SocketProvider = ({ children }) => {
             };
         }
         return null;
-    }, [socket, collectStats]);
+    }, [socket]);
 
     useEffect(() => {
         // Initialize socket connection
+        setTransportName('connecting...');
         const host = window.location.hostname;
         const port = window.location.port;
         const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
@@ -455,10 +432,36 @@ export const SocketProvider = ({ children }) => {
         // Expose socket globally for development/testing
         window.__socket = newSocket;
 
+        let trackedEngine = null;
+        // Transport upgrades are Engine.IO events, separate from Socket.IO connect.
+        const handleUpgrade = (transport) => {
+            const name = transport?.name || newSocket.io.engine?.transport?.name || 'unknown';
+            trafficStatsRef.current = {
+                ...trafficStatsRef.current,
+                transport: { ...trafficStatsRef.current.transport, name },
+                engine: {
+                    ...trafficStatsRef.current.engine,
+                    upgradeAttempts: trafficStatsRef.current.engine.upgradeAttempts + 1
+                }
+            };
+            setTransportName(name);
+        };
+
+        const detachEngine = () => {
+            trackedEngine?.off?.('upgrade', handleUpgrade);
+            trackedEngine = null;
+        };
+
         // Reset stats when socket connects
         newSocket.on('connect', () => {
             const now = Date.now();
             console.info('Socket connected - resetting traffic stats');
+
+            detachEngine();
+            trackedEngine = newSocket.io.engine;
+            trackedEngine?.on?.('upgrade', handleUpgrade);
+            const connectedTransport = trackedEngine?.transport?.name || 'unknown';
+            setTransportName(connectedTransport);
 
             // Reset application stats if collecting
             if (collectStatsRef.current) {
@@ -492,7 +495,7 @@ export const SocketProvider = ({ children }) => {
                     packetsPerSecond: { sent: 0, received: 0 }
                 },
                 transport: {
-                    name: newSocket.io.engine?.transport?.name || 'websocket',
+                    name: connectedTransport,
                     query: newSocket.io.engine?.transport?.query || {},
                     readyState: 'open'
                 },
@@ -507,6 +510,8 @@ export const SocketProvider = ({ children }) => {
 
         newSocket.on('disconnect', (reason) => {
             console.warn(`Socket disconnected: ${reason}`);
+            detachEngine();
+            setTransportName('disconnected');
             trafficStatsRef.current = {
                 ...trafficStatsRef.current,
                 transport: {
@@ -526,15 +531,11 @@ export const SocketProvider = ({ children }) => {
             };
         });
 
-        // Listen for transport events
-        newSocket.io.on('upgrade', () => {
-            console.info('Socket.IO transport upgraded');
+        newSocket.io.on('reconnect_attempt', () => {
+            setTransportName('connecting...');
             trafficStatsRef.current = {
                 ...trafficStatsRef.current,
-                engine: {
-                    ...trafficStatsRef.current.engine,
-                    upgradeAttempts: trafficStatsRef.current.engine.upgradeAttempts + 1
-                }
+                transport: { ...trafficStatsRef.current.transport, name: 'connecting...' }
             };
         });
 
@@ -545,6 +546,7 @@ export const SocketProvider = ({ children }) => {
         // Cleanup on unmount
         return () => {
             console.info('Closing socket connection');
+            detachEngine();
             newSocket.close();
         };
     }, [authEpoch]);
@@ -552,7 +554,9 @@ export const SocketProvider = ({ children }) => {
     const providerValue = {
         socket,
         handleAuthEpochChange,
+        transportName,
         trafficStatsRef,
+        sampleTrafficStats,
         getSocketIOEngineStats,
         setCollectStats,
         addDebugListener,

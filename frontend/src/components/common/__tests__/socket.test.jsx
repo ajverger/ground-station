@@ -101,4 +101,54 @@ describe('SocketProvider', () => {
     act(() => incoming()('sample', payload));
     expect(serializations).toBe(1);
   });
+
+  it('samples traffic on demand without a background timer', () => {
+    vi.useFakeTimers();
+    try {
+      const wrapper = ({ children }) => <SocketProvider>{children}</SocketProvider>;
+      const { result, unmount } = renderHook(() => useSocket(), { wrapper });
+      const incoming = result.current.socket.onAny.mock.calls.at(-1)[0];
+
+      expect(vi.getTimerCount()).toBe(0);
+      act(() => result.current.setCollectStats(true));
+      act(() => incoming('sample', { value: 1 }));
+      act(() => vi.advanceTimersByTime(1000));
+      expect(result.current.trafficStatsRef.current.engine.packetsReceived).toBe(0);
+
+      act(() => result.current.sampleTrafficStats());
+      expect(result.current.trafficStatsRef.current.engine.packetsReceived).toBe(1);
+      expect(result.current.trafficStatsRef.current.rates.packetsPerSecond.received).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+
+      act(() => result.current.setCollectStats(false));
+      unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('updates transport status from socket events without polling', () => {
+    const wrapper = ({ children }) => <SocketProvider>{children}</SocketProvider>;
+    const { result } = renderHook(() => useSocket(), { wrapper });
+    const socket = result.current.socket;
+    const connect = socket.on.mock.calls.find(([event]) => event === 'connect')[1];
+    const disconnect = socket.on.mock.calls.find(([event]) => event === 'disconnect')[1];
+
+    act(() => {
+      socket.io.engine.transport = { name: 'polling' };
+      connect();
+    });
+    expect(result.current.transportName).toBe('polling');
+
+    const upgrade = socket.io.engine.on.mock.calls.find(([event]) => event === 'upgrade')[1];
+    act(() => {
+      socket.io.engine.transport = { name: 'websocket' };
+      upgrade({ name: 'websocket' });
+    });
+    expect(result.current.transportName).toBe('websocket');
+    expect(result.current.trafficStatsRef.current.engine.upgradeAttempts).toBe(1);
+
+    act(() => disconnect('test'));
+    expect(result.current.transportName).toBe('disconnected');
+  });
 });
