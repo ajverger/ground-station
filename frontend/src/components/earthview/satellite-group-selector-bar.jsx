@@ -320,7 +320,7 @@ const SatelliteGroupSelectorBar = React.memo(function SatelliteGroupSelectorBar(
                                         <Box component="span" sx={{ display: 'inline-flex', flexShrink: 0 }}>
                                             <Button
                                                 data-pill-id={group.id}
-                                                variant={selectedSatGroupId === group.id ? 'contained' : 'outlined'}
+                                                variant="outlined"
                                                 size="small"
                                                 disabled={passesLoading || group.satelliteCount > SATELLITE_NUMBER_LIMIT}
                                                 aria-pressed={selectedSatGroupId === group.id}
@@ -329,17 +329,50 @@ const SatelliteGroupSelectorBar = React.memo(function SatelliteGroupSelectorBar(
                                                 sx={{
                                                     textTransform: 'none',
                                                     borderRadius: 4,
-                                                    px: { xs: 1.25, md: isCompactHeader ? 1.25 : 1.5 },
+                                                    p: 0,
                                                     minHeight: { xs: 34, md: 30 },
                                                     maxWidth: 220,
-                                                    fontSize: '0.78rem',
+                                                    fontSize: '0.8rem',
                                                     whiteSpace: 'nowrap',
+                                                    overflow: 'hidden',
+                                                    color: 'text.primary',
+                                                    bgcolor: 'background.paper',
+                                                    borderColor: selectedSatGroupId === group.id ? 'primary.main' : 'border.main',
+                                                    '&:hover': {
+                                                        bgcolor: 'background.elevated',
+                                                        borderColor: 'primary.main',
+                                                    },
+                                                    // Keep the focus ring inside the pill so the scrolling row does not clip it.
+                                                    '&.Mui-focusVisible': {
+                                                        outline: '2px solid',
+                                                        outlineColor: 'primary.main',
+                                                        outlineOffset: '-3px',
+                                                    },
+                                                    '&.Mui-disabled .recent-group-count': {
+                                                        bgcolor: 'state.disabledBg',
+                                                        color: 'state.disabled',
+                                                    },
                                                 }}
                                             >
-                                                <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                                {/* The font sits a little high within its line box, so lower the text in both segments. */}
+                                                <Box component="span" sx={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', px: { xs: 1.125, md: isCompactHeader ? 1.125 : 1.375 }, pt: '2px' }}>
                                                     {group.name}
                                                 </Box>
-                                                <Box component="span" sx={{ ml: 1, opacity: 0.75, fontWeight: 700, flexShrink: 0 }}>
+                                                <Box
+                                                    component="span"
+                                                    className="recent-group-count"
+                                                    sx={{
+                                                        alignSelf: 'stretch',
+                                                        display: 'inline-flex',
+                                                        alignItems: 'center',
+                                                        px: 0.875,
+                                                        pt: '2px',
+                                                        fontWeight: 700,
+                                                        flexShrink: 0,
+                                                        bgcolor: selectedSatGroupId === group.id ? 'primary.main' : 'state.selected',
+                                                        color: selectedSatGroupId === group.id ? 'primary.contrastText' : 'primary.main',
+                                                    }}
+                                                >
                                                     {group.satelliteCount}
                                                 </Box>
                                             </Button>
