@@ -62,8 +62,8 @@ const StatusBadge = ({ type, summary, t }) => {
             data-status={summary.status}
             sx={{
                 position: 'absolute',
-                top: -4,
-                [type === 'rotator' ? 'left' : 'right']: -4,
+                [type === 'rotator' ? 'top' : 'bottom']: -4,
+                right: -4,
                 width: 13,
                 height: 13,
                 borderRadius: '50%',
