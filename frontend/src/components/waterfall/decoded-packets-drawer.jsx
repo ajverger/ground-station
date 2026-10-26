@@ -189,13 +189,17 @@ export const mapOutputsToRows = (outputs, rowLimit = DEFAULT_DRAWER_ROW_LIMIT) =
             const isImage = isSstv || output.decoder_type === 'geoscanimage';
             const isLora = output.decoder_type === ModulationType.LORA;
 
-            // For SSTV and LoRa: use different display logic
-            const fromCallsign = (isImage || isLora) ? '-' : (output.output.callsigns?.from || '-');
-            const toCallsign = (isImage || isLora) ? '-' : (output.output.callsigns?.to || '-');
-
             // Use identified NORAD ID from backend lookup, then configured satellite
             const noradId = output.output.callsigns?.identified_norad_id || output.output.satellite?.norad_id;
             const satelliteName = output.output.callsigns?.identified_satellite || output.output.satellite?.name || '-';
+
+            // A LoRa payload has no callsign. Show the satellite associated with
+            // the locked transmitter as a hint, rather than a decoded identity.
+            const decodedFrom = output.output.callsigns?.from;
+            const lockedSatelliteName = output.output.satellite?.name?.trim();
+            const fromCallsign = isImage ? '-'
+                : (decodedFrom || (isLora && lockedSatelliteName ? `(${lockedSatelliteName})` : '-'));
+            const toCallsign = isImage ? '-' : (output.output.callsigns?.to || '-');
 
             // Image modes have their own label; LoRa rows expand the live decoder configuration.
             const parameters = isImage

@@ -58,6 +58,30 @@ describe('mapOutputsToRows', () => {
 
         expect(rows[0].parameters).toBe('SF7 · BW 125 kHz');
     });
+
+    it('shows the locked satellite as a LoRa From hint only when no callsign was decoded', () => {
+        const loraOutput = {
+            ...packet(1),
+            decoder_type: 'lora',
+            output: { callsigns: {}, satellite: { norad_id: 12345, name: 'TinyGS Sat' } },
+        };
+
+        expect(mapOutputsToRows([loraOutput])[0]).toMatchObject({
+            from: '(TinyGS Sat)',
+            to: '-',
+            satelliteName: 'TinyGS Sat',
+            noradId: 12345,
+        });
+        expect(mapOutputsToRows([{ ...loraOutput, output: { callsigns: {} } }])[0].from).toBe('-');
+        expect(mapOutputsToRows([{
+            ...loraOutput,
+            output: { ...loraOutput.output, callsigns: { from: 'DECODED', to: 'GROUND' } },
+        }])[0]).toMatchObject({ from: 'DECODED', to: 'GROUND' });
+        expect(mapOutputsToRows([{
+            ...loraOutput,
+            decoder_type: 'gmsk',
+        }])[0].from).toBe('-');
+    });
 });
 
 describe('resolveDecodedAssetUrl', () => {
