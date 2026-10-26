@@ -4,9 +4,10 @@ import { Provider } from 'react-redux';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TrackingLayout from './main-layout.jsx';
 
-const { gridRender, timelineRender } = vi.hoisted(() => ({
+const { gridRender, timelineRender, socketRef } = vi.hoisted(() => ({
     gridRender: vi.fn(),
     timelineRender: vi.fn(),
+    socketRef: {current: null},
 }));
 
 vi.mock('react-grid-layout', () => ({
@@ -16,7 +17,7 @@ vi.mock('react-grid-layout', () => ({
     },
     useContainerWidth: () => ({ width: 1200, containerRef: { current: null }, mounted: true }),
 }));
-vi.mock('../common/socket.jsx', () => ({ useSocket: () => ({ socket: null }) }));
+vi.mock('../common/socket.jsx', () => ({ useSocket: () => ({ socket: socketRef.current }) }));
 vi.mock('react-i18next', async (importOriginal) => ({
     ...(await importOriginal()),
     useTranslation: () => ({ t: (key) => key }),
@@ -45,6 +46,8 @@ const initialTarget = {
     satelliteId: 1,
     nextPassesHours: 24,
     satelliteData: { details: { name: 'Alpha' } },
+    trackingState: {target_type: 'satellite', norad_id: 1},
+    trackerId: 'target-1',
 };
 
 const targetReducer = (state = initialTarget, action) => {
@@ -63,6 +66,7 @@ const targetReducer = (state = initialTarget, action) => {
 
 describe('TrackingLayout render boundaries', () => {
     beforeEach(() => {
+        socketRef.current = null;
         gridRender.mockClear();
         timelineRender.mockClear();
         vi.stubGlobal('requestAnimationFrame', (callback) => window.setTimeout(callback, 0));
@@ -84,5 +88,20 @@ describe('TrackingLayout render boundaries', () => {
 
         act(() => store.dispatch({ type: 'setEditing' }));
         expect(gridRender.mock.calls.length).toBeGreaterThan(gridRendersBeforeSwitch);
+    });
+
+    it('requests current geometry when the Track page opens', async () => {
+        socketRef.current = {
+            emit: vi.fn((_event, _request, callback) => callback({success: true, data: {value: {norad_id: 1}}})),
+            emitWithAck: vi.fn(async () => ({success: true, data: null})),
+        };
+        const store = configureStore({
+            reducer: {targetSatTrack: targetReducer, dashboard: () => ({connected: true})},
+        });
+        render(<Provider store={store}><TrackingLayout /></Provider>);
+        await waitFor(() => expect(socketRef.current.emitWithAck).toHaveBeenCalledWith(
+            'api.call',
+            {cmd: 'get-tracker-context', data: {tracker_id: 'target-1'}},
+        ));
     });
 });

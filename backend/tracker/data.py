@@ -28,7 +28,6 @@ from common.common import serialize_object
 from db import AsyncSessionLocal
 from orbits import CentralBody, PropagationInput, get_propagation_input
 from tracker.contracts import get_tracking_state_name
-from tracking.footprint import get_satellite_coverage_circle
 from tracking.satellite import (
     get_satellite_az_el_from_propagation,
     get_satellite_path_from_propagation,
@@ -71,7 +70,6 @@ class SatelliteData(TypedDict):
     details: SatelliteDetails
     position: SatellitePosition
     paths: SatellitePaths
-    coverage: List[Any]
     transmitters: List[Any]
     error: bool
 
@@ -312,7 +310,9 @@ def cache_satellite_paths(
     cache_manager.set(cache_key, paths, ttl_minutes)
 
 
-async def compiled_satellite_data(dbsession, norad_id: int) -> Dict[str, Any]:
+async def compiled_satellite_data(
+    dbsession, norad_id: int, *, include_context: bool = True
+) -> Dict[str, Any]:
     """
     Compiles detailed information about a satellite, including its orbital details,
     transmitters, and sky position based on tracking data and user's location.
@@ -320,6 +320,7 @@ async def compiled_satellite_data(dbsession, norad_id: int) -> Dict[str, Any]:
 
     :param dbsession: Database session object used to interact with the database
     :param norad_id: Tracking state dictionary containing satellite tracking data
+    :param include_context: Load paths and transmitters for an explicit context request
     :return: Dictionary containing satellite details, transmitters, and position
     :rtype: dict
     :raises Exception: If satellite tracking data is unavailable or incomplete
@@ -328,14 +329,9 @@ async def compiled_satellite_data(dbsession, norad_id: int) -> Dict[str, Any]:
     :raises Exception: If user location is not found in the database
     """
 
-    satellite_data: Dict[str, Any] = {
-        "details": {},
-        # Position is added only after a successful az/el computation.
-        "paths": {"past": [], "future": []},
-        "coverage": [],
-        "transmitters": [],
-        "error": False,
-    }
+    satellite_data: Dict[str, Any] = {"details": {}, "error": False}
+    if include_context:
+        satellite_data.update({"paths": {"past": [], "future": []}, "transmitters": []})
 
     try:
 
@@ -357,17 +353,15 @@ async def compiled_satellite_data(dbsession, norad_id: int) -> Dict[str, Any]:
         satellite_data["details"]["tle2"] = propagation_input.tle2
         satellite_data["details"]["is_geostationary"] = _is_geostationary_orbit(propagation_input)
 
-        # get target map settings
-        target_map_settings_reply = await crud.preferences.get_map_settings(
-            dbsession, "target-map-settings"
-        )
-        target_map_settings = target_map_settings_reply["data"].get("value", {})
-
-        # fetch transmitters
-        transmitters = await crud.transmitters.fetch_transmitters_for_satellite(
-            dbsession, norad_id=norad_id
-        )
-        satellite_data["transmitters"] = transmitters["data"]
+        if include_context:
+            target_map_settings_reply = await crud.preferences.get_map_settings(
+                dbsession, "target-map-settings"
+            )
+            target_map_settings = target_map_settings_reply["data"].get("value", {})
+            transmitters = await crud.transmitters.fetch_transmitters_for_satellite(
+                dbsession, norad_id=norad_id
+            )
+            satellite_data["transmitters"] = transmitters["data"]
 
         location = await crud.locations.fetch_all_locations(dbsession)
         if (
@@ -393,34 +387,26 @@ async def compiled_satellite_data(dbsession, norad_id: int) -> Dict[str, Any]:
             datetime.now(timezone.utc),
         )
 
-        # calculate paths with caching
-        tle1, tle2 = _orbit_cache_keys(propagation_input)
-        duration_minutes = int(target_map_settings.get("orbitProjectionDuration", 240))
-        step_minutes = 0.5
-
-        # Try to get cached paths first
-        cached_paths = get_cached_satellite_paths(tle1, tle2, duration_minutes, step_minutes)
-
-        # Check for cached items
-        if cached_paths is not None:
-            logger.debug(f"Using cached satellite paths for NORAD ID: {norad_id}")
-            satellite_data["paths"] = cached_paths
-        else:
-            logger.info(f"Computing new satellite paths for NORAD ID: {norad_id}")
-            paths = get_satellite_path_from_propagation(
-                propagation_input,
-                duration_minutes=duration_minutes,
-                step_minutes=step_minutes,
-            )
-
-            # Cache the computed paths for 30 minutes
-            cache_satellite_paths(tle1, tle2, duration_minutes, step_minutes, paths, ttl_minutes=30)
-            satellite_data["paths"] = paths
-
-        # Add the coverage (footprint)
-        satellite_data["coverage"] = get_satellite_coverage_circle(
-            position["lat"], position["lon"], position["alt"] / 1000, num_points=300
-        )
+        if include_context:
+            # A state-only bootstrap does not need to touch orbit-path caches.
+            tle1, tle2 = _orbit_cache_keys(propagation_input)
+            duration_minutes = int(target_map_settings.get("orbitProjectionDuration", 240))
+            step_minutes = 0.5
+            cached_paths = get_cached_satellite_paths(tle1, tle2, duration_minutes, step_minutes)
+            if cached_paths is not None:
+                logger.debug(f"Using cached satellite paths for NORAD ID: {norad_id}")
+                satellite_data["paths"] = cached_paths
+            else:
+                logger.info(f"Computing new satellite paths for NORAD ID: {norad_id}")
+                paths = get_satellite_path_from_propagation(
+                    propagation_input,
+                    duration_minutes=duration_minutes,
+                    step_minutes=step_minutes,
+                )
+                cache_satellite_paths(
+                    tle1, tle2, duration_minutes, step_minutes, paths, ttl_minutes=30
+                )
+                satellite_data["paths"] = paths
 
         position["az"] = sky_point[0]
         position["el"] = sky_point[1]
@@ -450,7 +436,6 @@ def compiled_satellite_data_from_inputs(
         "details": {},
         # Position is added only after a successful az/el computation.
         "paths": {"past": [], "future": []},
-        "coverage": [],
         "transmitters": transmitters or [],
         "error": False,
     }
@@ -517,10 +502,6 @@ def compiled_satellite_data_from_inputs(
                 ttl_minutes=30,
             )
             satellite_data["paths"] = paths
-
-        satellite_data["coverage"] = get_satellite_coverage_circle(
-            position["lat"], position["lon"], position["alt"] / 1000, num_points=300
-        )
 
         position["az"] = sky_point[0]
         position["el"] = sky_point[1]

@@ -40,7 +40,7 @@ import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import ExploreIcon from '@mui/icons-material/Explore';
 import { store } from '../components/common/store.jsx';
 import { setSyncState } from '../components/satellites/synchronize-slice.jsx';
-import { setSatelliteData, setUITrackerValues, setTrackerCommandStatus, setHardwareSnapshot, fetchTrackerCommands, markTrackerCommandsUnknown } from '../components/target/target-slice.jsx';
+import { setSatelliteData, setSatelliteContext, setUITrackerValues, setTrackerCommandStatus, setHardwareSnapshot, fetchTrackerCommands, markTrackerCommandsUnknown } from '../components/target/target-slice.jsx';
 import {isCommandOutstanding} from '../components/target/tracker-command-state.js';
 import { setObserverSkyBodies, setTargetCelestialLivePointing } from '../components/celestial/celestial-slice.jsx';
 import { buildTargetKeyFromTrackingState } from '../components/target/celestial-target-utils.js';
@@ -520,10 +520,6 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
         // Satellite tracking events
         socket.on("satellite-tracking", (message) => {
             store.dispatch(setSatelliteData(message));
-            if (Array.isArray(message?.observer_bodies) && message.observer_bodies.length > 0) {
-                // Observer bodies are visual-only context shared by all target slots.
-                store.dispatch(setObserverSkyBodies(message.observer_bodies));
-            }
             const trackingState = message?.tracking_state || {};
             const targetKey = buildTargetKeyFromTrackingState(trackingState);
             const azDeg = Number(message?.satellite_data?.position?.az);
@@ -550,7 +546,7 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
                     } else if (event.name === 'rig_disconnected') {
                         // Intentionally silent: suppress rig disconnect toast.
                     } else if (event.name === 'min_elevation_out_of_bounds') {
-                        const satelliteData = message['data']?.['satellite_data'];
+                        const satelliteData = message?.satellite_data;
                         const satName = satelliteData?.details?.name || t('unknown');
                         const noradId = satelliteData?.details?.norad_id || '';
                         toast.error(
@@ -563,7 +559,7 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
                             }
                         );
                     } else if (event.name === 'max_elevation_out_of_bounds') {
-                        const satelliteData = message['data']?.['satellite_data'];
+                        const satelliteData = message?.satellite_data;
                         const satName = satelliteData?.details?.name || t('unknown');
                         const noradId = satelliteData?.details?.norad_id || '';
                         toast.error(
@@ -576,7 +572,7 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
                             }
                         );
                     } else if (event.name === 'min_azimuth_out_of_bounds') {
-                        const satelliteData = message['data']?.['satellite_data'];
+                        const satelliteData = message?.satellite_data;
                         const satName = satelliteData?.details?.name || t('unknown');
                         const noradId = satelliteData?.details?.norad_id || '';
                         toast.error(
@@ -589,7 +585,7 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
                             }
                         );
                     } else if (event.name === 'max_azimuth_out_of_bounds') {
-                        const satelliteData = message['data']?.['satellite_data'];
+                        const satelliteData = message?.satellite_data;
                         const satName = satelliteData?.details?.name || t('unknown');
                         const noradId = satelliteData?.details?.norad_id || '';
                         toast.error(
@@ -627,6 +623,16 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
                         );
                     }
                 });
+            }
+        });
+
+        socket.on('satellite-tracking-context', (message) => {
+            store.dispatch(setSatelliteContext(message));
+        });
+
+        socket.on('observer-sky-update', (message) => {
+            if (Array.isArray(message?.observer_bodies) && message.observer_bodies.length > 0) {
+                store.dispatch(setObserverSkyBodies(message.observer_bodies));
             }
         });
 
@@ -1090,6 +1096,8 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
             socket.off('session-runtime-snapshot');
             socket.off("sat-sync-events");
             socket.off("satellite-tracking");
+            socket.off("satellite-tracking-context");
+            socket.off("observer-sky-update");
             socket.off("ui-tracker-state");
             socket.off("tracker-command-status");
             socket.off('tracker-hardware-state');

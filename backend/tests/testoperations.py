@@ -236,6 +236,7 @@ async def test_partial_telemetry_cannot_complete_any_command(monkeypatch):
     update_vfos = AsyncMock()
     sockio = SimpleNamespace(emit=AsyncMock())
     monkeypatch.setattr(messagemodule, "handle_vfo_updates_for_tracking", update_vfos)
+    monkeypatch.setattr(messagemodule, "get_live_observer_bodies", AsyncMock(return_value=[]))
 
     async def stop_after_message(_delay):
         raise asyncio.CancelledError

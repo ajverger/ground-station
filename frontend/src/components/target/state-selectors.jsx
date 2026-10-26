@@ -17,6 +17,8 @@
  *
  */
 
+import {createSelector} from '@reduxjs/toolkit';
+import {getSatelliteCoverageCircle} from '../common/tracking-logic.jsx';
 
 
 const normalizeTargetType = (trackingState = {}) => {
@@ -49,7 +51,22 @@ export const targetIdentifierSelector = (state) => {
 
 export const satellitePositionSelector = state => state.targetSatTrack.satelliteData.position;
 export const satellitePathsSelector = state => state.targetSatTrack.satelliteData.paths;
-export const satelliteCoverageSelector = state => state.targetSatTrack.satelliteData.coverage;
+export const satelliteCoverageSelector = createSelector(
+    [satellitePositionSelector, targetTypeSelector, state => state.targetSatTrack.satelliteData.details?.norad_id],
+    (position, targetType, noradId) => {
+        const lat = Number(position?.lat);
+        const lon = Number(position?.lon ?? position?.lng);
+        const altitudeMeters = Number(position?.alt);
+        if (targetType !== 'satellite' || !noradId
+            || !Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(altitudeMeters)) {
+            return [];
+        }
+        // Only mounted map consumers select this polygon. All other pages avoid
+        // calculating or receiving its 300 points on each tracking tick.
+        return getSatelliteCoverageCircle(lat, lon, altitudeMeters / 1000, 300)
+            .map(point => [point.lat, point.lon]);
+    },
+);
 export const satelliteTrackingStateSelector = state => state.targetSatTrack.trackingState;
 export const satelliteDetailsSelector = state => state.targetSatTrack.satelliteData.details;
 export const satelliteTransmittersSelector = state => state.targetSatTrack.satelliteData.transmitters;

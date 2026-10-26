@@ -28,7 +28,20 @@ own one rotator at a time.
 
 - `satellite-tracking`
   - Required: `tracker_id`
-  - Optional payload keys: `tracking_state`, `satellite_data`, `rotator_data`, `rig_data`, `events`
+  - Live payload: `tracking_state`, `satellite_data.position`, small target identity in
+    `satellite_data.details`, `rotator_data`, `rig_data`, `events`, `context_key`, and
+    `context_revision`. Orbit paths, full details, transmitters, and coverage
+    polygons are not sent on each tick.
+
+- `satellite-tracking-context`
+  - Required: `tracker_id`, `context_key`, `context_revision`, `satellite_data`
+  - Carries changed `details`, `paths`, or `transmitters` fields. A target change
+    sends all fields; a transmitter edit can send only the transmitter list.
+    It does not carry tracking controls. Visible maps calculate coverage from
+    each live position; the backend does not construct a coverage polygon.
+
+- `observer-sky-update`
+  - Carries shared observer sky bodies occasionally and on a target context read.
 
 - `ui-tracker-state`
   - Required: `tracker_id`
@@ -40,6 +53,9 @@ own one rotator at a time.
 ## API / Handler Contract
 
 - Tracking read/write handlers accept `tracker_id` in request payload.
+- `get-tracker-context` returns the latest complete context to a viewing client;
+  it compiles fresh data from the database when no worker is running, so edits
+  to a stopped target are visible on the next request.
 - Tracking responses include `tracker_id`.
 - Event names are unversioned. `tracker_id` distinguishes tracker instances
   inside their payloads; there is no parallel versioned event stream.

@@ -41,8 +41,10 @@ import {
     setGridEditable,
     getTrackingStateFromBackend,
     setSatelliteId,
+    setSatelliteContext,
     fetchNextPasses,
 } from './target-slice.jsx'
+import {targetIdentifierSelector} from './state-selectors.jsx';
 import TargetInfoIsland from "./target-info-island.jsx";
 import NextPassesIsland from "./next-passes.jsx";
 import TargetViewRouter from './target-view-router.jsx';
@@ -303,6 +305,9 @@ const TrackingLayout = React.memo(function TrackingLayout() {
     const dispatch = useDispatch();
     const {t} = useTranslation('target');
     const gridEditable = useSelector(state => state.targetSatTrack.gridEditable);
+    const trackerId = useSelector(state => state.targetSatTrack.trackerId);
+    const targetIdentifier = useSelector(targetIdentifierSelector);
+    const socketConnected = useSelector(state => state.dashboard?.connected);
 
     const {width, containerRef, mounted} = useContainerWidth({measureBeforeMount: true});
     const [deferredIslandCount, setDeferredIslandCount] = useState(0);
@@ -694,6 +699,24 @@ const TrackingLayout = React.memo(function TrackingLayout() {
                 toast.error(`${t('errors.failed_get_tracking_state')}: ${error}`);
             });
     }, [dispatch, socket, t]);
+
+    useEffect(() => {
+        if (!socket || !socketConnected || !targetIdentifier) return undefined;
+        let cancelled = false;
+        // A freshly opened or reconnected Track page may have missed the last
+        // path update, so fetch the server's complete cached context once.
+        socket.emitWithAck('api.call', {
+            cmd: 'get-tracker-context',
+            data: {tracker_id: trackerId},
+        }).then(reply => {
+            if (!cancelled && reply?.success && reply?.data) {
+                dispatch(setSatelliteContext(reply.data));
+            }
+        }).catch(error => {
+            if (!cancelled) console.warn('Failed loading tracker context:', error);
+        });
+        return () => { cancelled = true; };
+    }, [dispatch, socket, socketConnected, trackerId, targetIdentifier]);
 
     // pre-make the components
     let gridContents = [

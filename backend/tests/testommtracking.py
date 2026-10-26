@@ -112,6 +112,7 @@ def test_tracker_compiles_six_digit_omm_ephemeris_without_tle():
 
     assert context is not None
     assert context["satellite_data"]["error"] is False
+    assert "coverage" not in context["satellite_data"]
     assert context["satellite_data"]["details"]["norad_id"] == 100000
     assert context["satellite_data"]["details"]["orbit_format"] == "omm"
     assert context["satellite_data"]["details"]["orbit_payload"] == OMM_PAYLOAD

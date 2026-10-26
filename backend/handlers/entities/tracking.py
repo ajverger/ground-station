@@ -23,13 +23,22 @@ from typing import Any, Dict, List, Optional, Union
 
 import crud
 from celestial.bodycatalog import get_celestial_body
-from celestial.scene import build_observer_sky_bodies
 from common.arguments import arguments
 from common.constants import RigStates, RotatorStates, SocketEvents, TrackerCommandScopes
 from common.events import public_events
 from common.targetkey import build_target_key, normalize_target_key
 from db import AsyncSessionLocal
 from session.tracker import session_tracker
+from tracker.context import (
+    CONTEXT_FIELDS,
+    OBSERVER_SKY_UPDATE,
+    apply_context,
+    context_key,
+    forget_context,
+    latest_context,
+    live_satellite_data,
+    next_revision,
+)
 from tracker.contracts import (
     InvalidTrackerIdError,
     get_tracking_state_name,
@@ -38,11 +47,13 @@ from tracker.contracts import (
 )
 from tracker.data import compiled_satellite_data, get_ui_tracker_state
 from tracker.instances import emit_tracker_instances
+from tracker.messages import get_live_observer_bodies
 from tracker.operations import operations, validate_external_request
 from tracker.runner import (
     get_assigned_rotator_for_tracker,
     get_tracker_instances_payload,
     get_tracker_manager,
+    get_tracker_supervisor,
     remove_tracker_instance,
     swap_rotators_between_trackers,
 )
@@ -246,89 +257,76 @@ def _resolve_max_target_slots() -> int:
     return max(1, configured_limit)
 
 
+async def _load_tracker_data(
+    dbsession, tracker_id: str, *, include_context: bool = True
+) -> Optional[Dict[str, Any]]:
+    """Build a tracker snapshot, loading paths and transmitters only on demand."""
+    tracker_id = require_tracker_id(tracker_id)
+    state_name = get_tracking_state_name(tracker_id)
+    tracking_state_reply = await crud.trackingstate.get_tracking_state(dbsession, name=state_name)
+    if not tracking_state_reply.get("success") or tracking_state_reply.get("data") is None:
+        return None
+    tracking_value = tracking_state_reply["data"].get("value")
+    if tracking_value is None:
+        return None
+
+    target_type = _infer_target_type_from_value(tracking_value) or "satellite"
+    if target_type == "satellite":
+        norad_id = tracking_value.get("norad_id", None)
+        satellite_data = await compiled_satellite_data(
+            dbsession, norad_id, include_context=include_context
+        )
+    else:
+        target_name = _resolve_non_satellite_target_name(tracking_value, target_type)
+        non_satellite_target_key = _build_non_satellite_transmitter_target_key(
+            tracking_value, target_type
+        )
+        non_satellite_transmitters: List[Dict[str, Any]] = []
+        if include_context and non_satellite_target_key:
+            transmitters_reply = await crud.transmitters.fetch_transmitters_for_target_key(
+                dbsession, non_satellite_target_key
+            )
+            if transmitters_reply.get("success"):
+                non_satellite_transmitters = transmitters_reply.get("data", []) or []
+        satellite_data = {
+            "details": {
+                "name": target_name,
+                "target_key": non_satellite_target_key,
+                "target_type": target_type,
+                "mission_id": tracking_value.get("mission_id"),
+                "command": tracking_value.get("command"),
+                "body_id": tracking_value.get("body_id"),
+                "norad_id": None,
+                "is_geostationary": False,
+            },
+            "error": False,
+        }
+        if include_context:
+            # A blank position would clear valid az/el until the next worker tick.
+            satellite_data["paths"] = {"past": [], "future": []}
+            satellite_data["transmitters"] = non_satellite_transmitters
+    return {
+        "tracker_id": tracker_id,
+        "satellite_data": satellite_data,
+        "tracking_state": tracking_value,
+    }
+
+
 async def emit_tracker_data(
     dbsession, sio, logger, tracker_id: str, recipient_sid: Optional[str] = None
 ):
-    """
-    Emits satellite tracking data to the provided Socket.IO instance. This function retrieves the
-    current state of satellite tracking from the database, processes the relevant satellite data,
-    fetches the UI tracker state, and emits the resulting combined data to a specific event on
-    the Socket.IO instance. Errors during data retrieval, processing, or emitting are logged.
-
-    :param dbsession: Database session object used to access and query the database.
-    :type dbsession: Any
-    :param sio: Socket.IO server instance for emitting events.
-    :type sio: AsyncServer
-    :param logger: Logger object for logging errors or exceptions.
-    :type logger: Any
-    :param recipient_sid: Send a requested snapshot only to this socket; broadcast changes otherwise.
-    :return: This function does not return any value as it emits data asynchronously.
-    :rtype: None
-    """
-    tracker_id = require_tracker_id(tracker_id)
-    state_name = get_tracking_state_name(tracker_id)
+    """Emit the small state snapshot; full geometry is requested by viewing pages."""
     try:
-        logger.debug("Sending tracker data to clients...")
-
-        tracking_state_reply = await crud.trackingstate.get_tracking_state(
-            dbsession, name=state_name
+        data = await _load_tracker_data(dbsession, tracker_id, include_context=False)
+        if data is None:
+            return
+        key = context_key(data["tracking_state"], data["satellite_data"])
+        cached = latest_context(data["tracker_id"])
+        data["context_key"] = key
+        data["context_revision"] = (
+            cached["context_revision"] if cached and cached["context_key"] == key else 0
         )
-
-        # Check if tracking state exists (not None for first-time users)
-        if not tracking_state_reply.get("success") or tracking_state_reply.get("data") is None:
-            logger.debug("No tracking state found, skipping tracker data emission")
-            return
-
-        tracking_value = tracking_state_reply["data"].get("value")
-        if tracking_value is None:
-            logger.debug("Tracking state has no value, skipping tracker data emission")
-            return
-
-        target_type = _infer_target_type_from_value(tracking_value) or "satellite"
-        if target_type == "satellite":
-            norad_id = tracking_value.get("norad_id", None)
-            satellite_data = await compiled_satellite_data(dbsession, norad_id)
-        else:
-            target_name = _resolve_non_satellite_target_name(tracking_value, target_type)
-            non_satellite_target_key = _build_non_satellite_transmitter_target_key(
-                tracking_value, target_type
-            )
-            non_satellite_transmitters: List[Dict[str, Any]] = []
-            if non_satellite_target_key:
-                transmitters_reply = await crud.transmitters.fetch_transmitters_for_target_key(
-                    dbsession, non_satellite_target_key
-                )
-                if transmitters_reply.get("success"):
-                    non_satellite_transmitters = transmitters_reply.get("data", []) or []
-            satellite_data = {
-                "details": {
-                    "name": target_name,
-                    "target_key": non_satellite_target_key,
-                    "target_type": target_type,
-                    "mission_id": tracking_value.get("mission_id"),
-                    "command": tracking_value.get("command"),
-                    "body_id": tracking_value.get("body_id"),
-                    "norad_id": None,
-                    "is_geostationary": False,
-                },
-                # Do not emit placeholder position objects here; a blank position
-                # causes clients to clear valid az/el until the next tracker tick.
-                "paths": {"past": [], "future": []},
-                "coverage": [],
-                "transmitters": non_satellite_transmitters,
-                "error": False,
-            }
-        data = {
-            "tracker_id": tracker_id,
-            "satellite_data": satellite_data,
-            "tracking_state": tracking_value,
-            # The Sun is visual context for the planetarium, never a selected
-            # tracking target or a pass-table row.
-            "observer_bodies": await build_observer_sky_bodies(
-                data={"past_hours": 0, "future_hours": 1, "step_minutes": 60},
-                logger=logger,
-            ),
-        }
+        data["satellite_data"] = live_satellite_data(data["satellite_data"])
         if recipient_sid is None:
             await sio.emit(SocketEvents.SATELLITE_TRACKING, data)
         else:
@@ -337,6 +335,86 @@ async def emit_tracker_data(
     except Exception as e:
         logger.error(f"Error emitting tracker data: {e}")
         logger.exception(e)
+
+
+async def get_tracker_context(
+    sio: Any, data: Optional[Dict], logger: Any, sid: str
+) -> Dict[str, Any]:
+    """Return complete current context to a map page, including after reconnect."""
+    try:
+        tracker_id = require_tracker_id((data or {}).get("tracker_id"))
+    except InvalidTrackerIdError:
+        return _tracker_id_required_response()
+    requested_fields = (data or {}).get("fields")
+    fields = (
+        tuple(field for field in requested_fields if field in CONTEXT_FIELDS)
+        if isinstance(requested_fields, list)
+        else CONTEXT_FIELDS
+    )
+    if not fields:
+        return {"success": False, "error": "context_fields_required"}
+
+    def for_request(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(snapshot)
+        payload["satellite_data"] = {
+            field: snapshot["satellite_data"][field]
+            for field in fields
+            if field in snapshot["satellite_data"]
+        }
+        if "paths" in fields and "position" in snapshot["satellite_data"]:
+            payload["satellite_data"]["position"] = snapshot["satellite_data"]["position"]
+        return payload
+
+    try:
+        async with AsyncSessionLocal() as dbsession:
+            state_reply = await crud.trackingstate.get_tracking_state(
+                dbsession, name=get_tracking_state_name(tracker_id)
+            )
+            tracking_state = (state_reply.get("data") or {}).get("value") or {}
+            if not tracking_state:
+                return {"success": False, "error": "tracking_state_missing"}
+            if "paths" in fields:
+                observer_bodies = await get_live_observer_bodies()
+                if observer_bodies:
+                    await sio.emit(
+                        OBSERVER_SKY_UPDATE, {"observer_bodies": observer_bodies}, to=sid
+                    )
+            key = context_key(tracking_state, {})
+            cached = latest_context(tracker_id)
+            runtime = get_tracker_supervisor().get_runtime(tracker_id)
+            if runtime and runtime.process.is_alive():
+                if (
+                    cached
+                    and cached["context_key"] == key
+                    and cached.get("worker_pid") == runtime.process.pid
+                ):
+                    return {"success": True, "data": for_request(cached)}
+                # The first worker context is on its way. A DB fallback could
+                # overtake it and appear newer despite containing older inputs.
+                return {"success": True, "pending": True, "data": None}
+
+            # A stopped worker cannot refresh cached target data after a catalog
+            # edit, so rebuild only when a viewing client explicitly asks.
+            snapshot = await _load_tracker_data(dbsession, tracker_id)
+            if snapshot is None:
+                return {"success": False, "error": "tracking_state_missing"}
+            refreshed = latest_context(tracker_id)
+            runtime = get_tracker_supervisor().get_runtime(tracker_id)
+            if runtime and runtime.process.is_alive():
+                return {"success": True, "pending": True, "data": None}
+            payload = {
+                "tracker_id": tracker_id,
+                "context_key": context_key(snapshot["tracking_state"], snapshot["satellite_data"]),
+                "context_revision": next_revision(
+                    refreshed["context_revision"] if refreshed else 0
+                ),
+                "satellite_data": snapshot["satellite_data"],
+            }
+            apply_context(payload)
+            return {"success": True, "data": for_request(payload)}
+    except Exception:
+        logger.exception("Failed loading tracker context for %s", tracker_id)
+        return {"success": False, "error": "tracker_context_unavailable"}
 
 
 async def emit_ui_tracker_values(
@@ -813,6 +891,7 @@ async def delete_tracker_instance(
         if remove_result.get("success"):
             async with operations.lock:
                 operations.forget_tracker(tracker_id)
+            forget_context(tracker_id)
     except TimeoutError:
         return {
             "success": False,
@@ -1315,6 +1394,7 @@ def register_handlers(registry):
         {
             "get-tracker-commands": (get_tracker_commands, "api_call"),
             "get-tracking-state": (get_tracking_state, "api_call"),
+            "get-tracker-context": (get_tracker_context, "api_call"),
             "set-tracking-state": (set_tracking_state, "api_call"),
             "swap-target-rotators": (swap_target_rotators, "api_call"),
             "get-tracker-instances": (get_tracker_instances, "api_call"),

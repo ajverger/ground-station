@@ -24,6 +24,7 @@ from typing import Any, Dict
 from celestial.scene import build_observer_sky_bodies
 from common.constants import SocketEvents
 from common.events import public_events
+from tracker.context import OBSERVER_SKY_UPDATE, SATELLITE_TRACKING_CONTEXT, apply_context
 from tracker.contracts import InvalidTrackerIdError, is_target_slot_id, require_tracker_id
 from tracker.operations import operations
 from tracker.runner import get_existing_tracker_manager, get_tracker_supervisor, queue_from_tracker
@@ -118,8 +119,8 @@ def _snapshot_from_current_worker(tracker_id: str, snapshot: Dict[str, Any]) -> 
     return bool(runtime and runtime.process.is_alive() and runtime.process.pid == worker_pid)
 
 
-async def _get_live_observer_bodies() -> list[Dict[str, Any]]:
-    """Cache the Sun briefly so every tracker event carries useful sky context."""
+async def get_live_observer_bodies() -> list[Dict[str, Any]]:
+    """Cache the Sun briefly for occasional shared sky updates."""
     global _observer_bodies_cache, _observer_bodies_cache_updated_at
 
     now = time.monotonic()
@@ -151,6 +152,7 @@ async def handle_tracker_messages(sockio):
         sockio: Socket.IO server instance for emitting events
     """
     last_hardware_reconcile = time.monotonic()
+    last_observer_broadcast = 0.0
     while True:
         try:
             if time.monotonic() - last_hardware_reconcile >= 0.5:
@@ -187,6 +189,9 @@ async def handle_tracker_messages(sockio):
                         await asyncio.sleep(0)
                         continue
                     data["tracker_id"] = tracker_id
+                    if event in {SATELLITE_TRACKING_CONTEXT, SocketEvents.SATELLITE_TRACKING}:
+                        if not _snapshot_from_current_worker(tracker_id, data):
+                            continue
                     if event == SocketEvents.TRACKER_COMMAND_STATUS:
                         record = operations.existing(data.get("command_id"), tracker_id)
                         if record and record.get("epoch") == data.get("epoch") == operations.epoch:
@@ -248,12 +253,21 @@ async def handle_tracker_messages(sockio):
                             _publish_hardware_changes(tracker_id, previous, data)
                             public_events.observe_rotator(tracker_id, data)
                             public_events.observe_rig(tracker_id, data)
-                    if event == SocketEvents.SATELLITE_TRACKING and not data.get("observer_bodies"):
-                        # Satellites do not carry heliocentric Earth vectors in
-                        # their worker payload, so attach the shared live Sun here.
-                        data["observer_bodies"] = await _get_live_observer_bodies()
+                    if event == SATELLITE_TRACKING_CONTEXT:
+                        # Retain the complete context for a page opened after the
+                        # worker's initial or most recent partial update.
+                        if apply_context(data) is None:
+                            continue
                     if event == SocketEvents.SATELLITE_TRACKING:
                         _publish_target_visibility(tracker_id, data)
+                        now = time.monotonic()
+                        if now - last_observer_broadcast >= OBSERVER_BODIES_CACHE_SECONDS:
+                            last_observer_broadcast = now
+                            observer_bodies = await get_live_observer_bodies()
+                            if observer_bodies:
+                                await sockio.emit(
+                                    OBSERVER_SKY_UPDATE, {"observer_bodies": observer_bodies}
+                                )
                     await sockio.emit(event, data)
 
                     # Handle VFO updates for SDR tracking

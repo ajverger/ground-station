@@ -210,8 +210,10 @@ const normalizeSatelliteData = (satelliteData = {}) => ({
 const mergeSatelliteDetails = (previous = {}, incoming = {}) => {
     // Preserve catalog metadata for the same target, but never carry orbital
     // fields from a previous target into a newly streamed satellite.
-    const sameTarget = previous.norad_id != null && incoming.norad_id != null
-        && String(previous.norad_id) === String(incoming.norad_id);
+    const sameTarget = incoming.target_key && previous.target_key
+        ? String(previous.target_key) === String(incoming.target_key)
+        : (previous.norad_id != null && incoming.norad_id != null
+            && String(previous.norad_id) === String(incoming.norad_id));
     return {
         ...(sameTarget ? previous : cloneDefaultSatelliteData().details),
         ...incoming,
@@ -335,6 +337,9 @@ const resolveFallbackTrackerSlotId = (state) => {
 const createDefaultTrackerView = () => ({
     trackingState: cloneDefaultTrackingState(),
     satelliteData: cloneDefaultSatelliteData(),
+    contextData: {},
+    contextKey: '',
+    contextRevision: 0,
     rotatorData: cloneDefaultRotatorData(),
     rigData: cloneDefaultRigData(),
     lastRotatorEvent: '',
@@ -950,6 +955,22 @@ const targetSatTrackSlice = createSlice({
             }
 
             const trackerView = state.trackerViews[incomingTrackerId] || createDefaultTrackerView();
+            const incomingContextKey = action.payload?.context_key;
+            const incomingRevision = Number(action.payload?.context_revision) || 0;
+            if (incomingRevision && incomingRevision < (trackerView.contextRevision || 0)) return;
+            if (incomingContextKey && trackerView.contextKey !== incomingContextKey
+                && incomingRevision && incomingRevision <= (trackerView.contextRevision || 0)) return;
+            if (incomingContextKey && trackerView.contextKey !== incomingContextKey) {
+                // A target transition must not display the previous target's
+                // orbit or transmitter list while the new context is arriving.
+                trackerView.contextData = {};
+                trackerView.satelliteData = cloneDefaultSatelliteData();
+                trackerView.contextKey = incomingContextKey;
+                if (isActiveTracker) state.satelliteData = cloneDefaultSatelliteData();
+            }
+            if (incomingContextKey) {
+                trackerView.contextRevision = Math.max(trackerView.contextRevision || 0, incomingRevision);
+            }
 
                 if (action.payload['tracking_state']) {
                     // Sequenced observations carry authoritative desired state.
@@ -1168,6 +1189,32 @@ const targetSatTrackSlice = createSlice({
                     state.rigData.transmitters = normalizeTransmitters(state.rigData.transmitters);
                 }
             }
+        },
+        setSatelliteContext(state, action) {
+            const trackerId = resolveTrackerId(action.payload?.tracker_id, DEFAULT_TRACKER_ID);
+            const trackerView = state.trackerViews[trackerId] || createDefaultTrackerView();
+            const key = action.payload?.context_key;
+            const revision = Number(action.payload?.context_revision) || 0;
+            if (!key || !revision) return;
+            if (trackerView.contextKey && revision < (trackerView.contextRevision || 0)) return;
+            if (trackerView.contextKey !== key && revision <= (trackerView.contextRevision || 0)) return;
+            // Existing consumers keep their merged satelliteData view. The
+            // separate context object changes only when slow fields change.
+            // Context may have been cached before a later rig or VFO selection.
+            // Only live telemetry and hardware snapshots can update tracking state.
+            const contextPayload = {...(action.payload || {})};
+            delete contextPayload.tracking_state;
+            targetSatTrackSlice.caseReducers.setSatelliteData(state, {...action, payload: contextPayload});
+            const updatedView = state.trackerViews[trackerId];
+            const incomingContextData = action.payload?.satellite_data || {};
+            updatedView.contextData = {
+                ...updatedView.contextData,
+                ...Object.fromEntries(
+                    ['details', 'paths', 'transmitters']
+                        .filter(field => Object.prototype.hasOwnProperty.call(incomingContextData, field))
+                        .map(field => [field, incomingContextData[field]]),
+                ),
+            };
         },
         setUITrackerValues(state, action) {
             const incomingTrackerId = resolveTrackerId(action.payload?.tracker_id, DEFAULT_TRACKER_ID);
@@ -1885,6 +1932,7 @@ const targetSatTrackSlice = createSlice({
 
 export const {
     setSatelliteData,
+    setSatelliteContext,
     setSatellitePasses,
     updateSatellitePassesWithElevationCurves,
     setSatelliteId,

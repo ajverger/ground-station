@@ -29,6 +29,14 @@ from common.arguments import arguments as args
 from common.constants import DictKeys, SocketEvents
 from common.targetkey import normalize_target_key
 from orbits import CentralBody, OrbitServiceError, get_propagation_input
+from tracker.context import (
+    SATELLITE_TRACKING_CONTEXT,
+    chunk_digest,
+    context_chunks,
+    context_key,
+    live_satellite_data,
+    next_revision,
+)
 from tracker.contracts import require_tracker_id
 from tracker.data import compiled_satellite_data_from_inputs
 from tracker.execution import WorkerOperations
@@ -203,6 +211,9 @@ class SatelliteTracker:
 
         # Satellite data
         self.satellite_data: Dict[str, Any] = {}
+        self._context_key = ""
+        self._context_revision = 0
+        self._context_hashes: Dict[str, str] = {}
 
         # State change tracking (replacing StateTracker)
         self.prev_norad_id: Optional[int] = None
@@ -535,38 +546,8 @@ class SatelliteTracker:
                 "el": float(el_deg),
             },
             "paths": {"past": [], "future": []},
-            "coverage": [],
             "transmitters": list(transmitters or []),
             "error": False,
-        }
-
-    @staticmethod
-    def _build_observer_sun(
-        *,
-        earth_position_xyz_au: List[float],
-        epoch: datetime,
-        observer_lat_deg: float,
-        observer_lon_deg: float,
-    ) -> Dict[str, Any]:
-        """Build the live Sun context from the same ephemeris used for the target."""
-        observer_view = compute_observer_sky_position(
-            target_heliocentric_xyz_au=[0.0, 0.0, 0.0],
-            earth_heliocentric_xyz_au=earth_position_xyz_au,
-            epoch=epoch,
-            observer_lat_deg=observer_lat_deg,
-            observer_lon_deg=observer_lon_deg,
-        )
-        return {
-            "id": "sun",
-            "target_key": "observer:sun",
-            "target_type": "observer",
-            "body_id": "sun",
-            "name": "Sun",
-            "body_type": "star",
-            "sky_position": observer_view.get("sky_position"),
-            "visibility": observer_view.get("visibility"),
-            "source": "observer-math",
-            "color": "#fbbf24",
         }
 
     def _resolve_target_context(
@@ -739,17 +720,6 @@ class SatelliteTracker:
             )
             return None
 
-        # The worker already has an Earth vector and observer location for
-        # mission/body tracking, so publish an equally current Sun position.
-        observer_bodies = [
-            self._build_observer_sun(
-                earth_position_xyz_au=earth_position,
-                epoch=now_epoch,
-                observer_lat_deg=observer_lat,
-                observer_lon_deg=observer_lon,
-            )
-        ]
-
         if target_type == "mission":
             command = str(
                 tracking_state.get("command") or input_payload.get("command") or ""
@@ -826,7 +796,6 @@ class SatelliteTracker:
                 ),
                 "satellite_tles": None,
                 "range_rate_km_s": range_rate_km_s,
-                "observer_bodies": observer_bodies,
             }
 
         body_id = (
@@ -900,8 +869,54 @@ class SatelliteTracker:
             ),
             "satellite_tles": None,
             "range_rate_km_s": range_rate_km_s,
-            "observer_bodies": observer_bodies,
         }
+
+    def _queue_tracking_update(self, tracker: Dict[str, Any]) -> None:
+        """Queue changed context once, followed by the small live reading."""
+        current_key = context_key(tracker, self.satellite_data)
+        chunks = context_chunks(self.satellite_data)
+        hashes = {field: chunk_digest(value) for field, value in chunks.items()}
+        changed = (
+            chunks
+            if current_key != self._context_key
+            else {
+                field: value
+                for field, value in chunks.items()
+                if hashes[field] != self._context_hashes.get(field)
+            }
+        )
+        if changed:
+            self._context_revision = next_revision(self._context_revision)
+            self._context_key = current_key
+            self._context_hashes = hashes
+            # A transmitter edit queues just that list, not the unchanged path.
+            self.queue_out.put(
+                {
+                    DictKeys.EVENT: SATELLITE_TRACKING_CONTEXT,
+                    DictKeys.DATA: {
+                        "context_key": current_key,
+                        "context_revision": self._context_revision,
+                        "worker_pid": self.process.pid,
+                        DictKeys.SATELLITE_DATA: changed,
+                    },
+                }
+            )
+        self.queue_out.put(
+            {
+                DictKeys.EVENT: SocketEvents.SATELLITE_TRACKING,
+                DictKeys.DATA: {
+                    DictKeys.SATELLITE_DATA: live_satellite_data(self.satellite_data),
+                    DictKeys.EVENTS: self.events.copy(),
+                    DictKeys.ROTATOR_DATA: self.rotator_data.copy(),
+                    DictKeys.RIG_DATA: self.rig_data.copy(),
+                    DictKeys.TRACKING_STATE: tracker.copy(),
+                    "context_key": self._context_key,
+                    "context_revision": self._context_revision,
+                    "worker_pid": self.process.pid,
+                },
+            }
+        )
+        self.stats["updates_sent"] += 1
 
     async def run(self):
         """Main tracking loop."""
@@ -955,7 +970,7 @@ class SatelliteTracker:
 
             # Initialize to None at the start of each iteration
             initial_tracking_state = None
-            observer_bodies: List[Dict[str, Any]] = []
+            self.satellite_data = {}
 
             try:
                 self.stats["tracking_cycles"] += 1
@@ -1024,8 +1039,6 @@ class SatelliteTracker:
                 target_context = self._resolve_target_context(tracking_state, location)
                 if not target_context:
                     continue
-                observer_bodies = list(target_context.get("observer_bodies") or [])
-
                 tracker = dict(tracking_state)
                 target_type = target_context["target_type"]
                 if target_type != "satellite":
@@ -1135,19 +1148,7 @@ class SatelliteTracker:
                         pass
                     else:
                         try:
-                            full_msg = {
-                                DictKeys.EVENT: SocketEvents.SATELLITE_TRACKING,
-                                DictKeys.DATA: {
-                                    DictKeys.SATELLITE_DATA: self.satellite_data,
-                                    DictKeys.EVENTS: self.events.copy(),
-                                    DictKeys.ROTATOR_DATA: self.rotator_data.copy(),
-                                    DictKeys.RIG_DATA: self.rig_data.copy(),
-                                    DictKeys.TRACKING_STATE: tracker.copy(),
-                                    "observer_bodies": observer_bodies,
-                                },
-                            }
-                            self.queue_out.put(full_msg)
-                            self.stats["updates_sent"] += 1
+                            self._queue_tracking_update(tracker)
 
                         except Exception as e:
                             logger.critical(f"Error sending satellite tracking data: {e}")

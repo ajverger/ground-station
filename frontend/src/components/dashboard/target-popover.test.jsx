@@ -7,7 +7,7 @@ import '../../i18n/config.js';
 import SatelliteInfoPopover from './target-popover.jsx';
 
 const { socket, navigate } = vi.hoisted(() => ({
-    socket: { connected: false, emit: vi.fn() },
+    socket: { connected: false, emit: vi.fn(), emitWithAck: vi.fn() },
     navigate: vi.fn(),
 }));
 
@@ -39,8 +39,9 @@ vi.mock('../satellites/transmitters-dialog.jsx', () => ({
     ),
 }));
 
-const renderPopover = () => {
+const renderPopover = ({connected = false} = {}) => {
     const state = {
+        dashboard: {connected},
         trackerInstances: {
             instances: [
                 { tracker_id: 'sat-1', target_number: 1 },
@@ -80,6 +81,7 @@ const renderPopover = () => {
 describe('dashboard target popover editors', () => {
     beforeEach(() => {
         socket.emit.mockReset();
+        socket.emitWithAck.mockReset().mockResolvedValue({success: true, data: null});
         navigate.mockReset();
         Object.defineProperty(navigator, 'clipboard', {
             configurable: true,
@@ -145,5 +147,10 @@ describe('dashboard target popover editors', () => {
         expect(navigator.clipboard.writeText).toHaveBeenNthCalledWith(3, 'Moon (moon)');
         expect(navigator.clipboard.writeText).toHaveBeenNthCalledWith(4, 'Voyager 1 (-61)');
         expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('does not request target context just to open the dashboard popover', async () => {
+        renderPopover({connected: true});
+        expect(socket.emitWithAck).not.toHaveBeenCalled();
     });
 });

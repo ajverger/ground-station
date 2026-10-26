@@ -105,7 +105,7 @@ async def get_satellite(
     sio: Any, data: Optional[Dict], logger: Any, sid: str
 ) -> Dict[str, Union[bool, dict]]:
     """
-    Get single satellite with complete details (position, coverage, etc.).
+    Get single satellite with complete details, position, and orbit paths.
 
     Args:
         sio: Socket.IO server instance

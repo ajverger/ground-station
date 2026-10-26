@@ -2,6 +2,8 @@
 
 import time
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -14,6 +16,7 @@ from handlers.entities.tracking import (
     _normalize_tracker_target_type,
     _pick_active_or_upcoming_pass,
 )
+from tracker.context import apply_context, forget_context
 
 
 class _SessionContext:
@@ -22,6 +25,107 @@ class _SessionContext:
 
     async def __aexit__(self, exc_type, exc, traceback):
         return None
+
+
+@pytest.mark.asyncio
+async def test_context_read_refreshes_stopped_worker_data(monkeypatch):
+    tracker_id = "target-1"
+    forget_context(tracker_id)
+
+    async def _get_state(_session, name):
+        assert name == "satellite-tracking:target-1"
+        return {"success": True, "data": {"value": {"norad_id": 25544}}}
+
+    compile_data = AsyncMock(
+        return_value={
+            "position": {"lat": 1, "lon": 2, "alt": 400000},
+            "details": {"norad_id": 25544, "name": "ISS"},
+            "paths": {"past": [1], "future": [2]},
+            "coverage": [{"lat": 1, "lon": 2}],
+            "transmitters": [{"id": "tx-1"}],
+        }
+    )
+    monkeypatch.setattr(tracking_handler, "AsyncSessionLocal", _SessionContext)
+    monkeypatch.setattr(tracking_handler.crud.trackingstate, "get_tracking_state", _get_state)
+    monkeypatch.setattr(tracking_handler, "compiled_satellite_data", compile_data)
+    monkeypatch.setattr(
+        tracking_handler,
+        "get_tracker_supervisor",
+        lambda: SimpleNamespace(get_runtime=lambda _tracker_id: None),
+    )
+    monkeypatch.setattr(tracking_handler, "get_live_observer_bodies", AsyncMock(return_value=[]))
+    socket = SimpleNamespace(emit=AsyncMock())
+    try:
+        metadata = await tracking_handler.get_tracker_context(
+            socket, {"tracker_id": tracker_id, "fields": ["details", "transmitters"]}, None, "sid-1"
+        )
+        assert metadata["success"] is True
+        assert set(metadata["data"]["satellite_data"]) == {"details", "transmitters"}
+
+        # Editing the same target while its worker is stopped must not return
+        # the cached transmitter list from the previous context request.
+        compile_data.return_value = {
+            **compile_data.return_value,
+            "transmitters": [{"id": "tx-2"}],
+        }
+        full = await tracking_handler.get_tracker_context(
+            socket, {"tracker_id": tracker_id}, None, "sid-1"
+        )
+        assert full["success"] is True
+        assert full["data"]["satellite_data"]["paths"] == {"past": [1], "future": [2]}
+        assert full["data"]["satellite_data"]["transmitters"] == [{"id": "tx-2"}]
+        assert "coverage" not in full["data"]["satellite_data"]
+        assert compile_data.await_count == 2
+        assert all(
+            call.kwargs == {"include_context": True} for call in compile_data.await_args_list
+        )
+    finally:
+        forget_context(tracker_id)
+
+
+@pytest.mark.asyncio
+async def test_context_read_uses_only_current_worker_cache(monkeypatch):
+    tracker_id = "target-1"
+    forget_context(tracker_id)
+
+    async def _get_state(_session, name):
+        assert name == "satellite-tracking:target-1"
+        return {"success": True, "data": {"value": {"norad_id": 25544}}}
+
+    process = SimpleNamespace(pid=71, is_alive=lambda: True)
+    monkeypatch.setattr(tracking_handler, "AsyncSessionLocal", _SessionContext)
+    monkeypatch.setattr(tracking_handler.crud.trackingstate, "get_tracking_state", _get_state)
+    monkeypatch.setattr(
+        tracking_handler,
+        "get_tracker_supervisor",
+        lambda: SimpleNamespace(get_runtime=lambda _tracker_id: SimpleNamespace(process=process)),
+    )
+    monkeypatch.setattr(tracking_handler, "get_live_observer_bodies", AsyncMock(return_value=[]))
+    compile_data = AsyncMock()
+    monkeypatch.setattr(tracking_handler, "compiled_satellite_data", compile_data)
+    socket = SimpleNamespace(emit=AsyncMock())
+    try:
+        apply_context(
+            {
+                "tracker_id": tracker_id,
+                "context_key": "satellite:25544",
+                "context_revision": 10,
+                "worker_pid": 71,
+                "satellite_data": {"details": {"name": "ISS"}, "paths": {"future": [1]}},
+            }
+        )
+        current = await tracking_handler.get_tracker_context(
+            socket, {"tracker_id": tracker_id}, None, "sid-1"
+        )
+        assert current["data"]["satellite_data"]["paths"] == {"future": [1]}
+        process.pid = 72
+        replacement = await tracking_handler.get_tracker_context(
+            socket, {"tracker_id": tracker_id}, None, "sid-1"
+        )
+        assert replacement == {"success": True, "pending": True, "data": None}
+        compile_data.assert_not_awaited()
+    finally:
+        forget_context(tracker_id)
 
 
 @pytest.mark.asyncio
@@ -46,14 +150,14 @@ async def test_tracking_read_targets_requester_and_state_change_broadcasts(monke
         assert name == "satellite-tracking:target-1"
         return {"success": True, "data": {"value": {"norad_id": 25544, "group_id": 1}}}
 
-    async def _satellite_data(_session, _norad_id):
+    compiled_modes = []
+
+    async def _satellite_data(_session, _norad_id, *, include_context=True):
+        compiled_modes.append(include_context)
         return {"details": {"name": "ISS"}}
 
     async def _ui_state(_group_id, _norad_id, _tracker_id):
         return {"data": {"groups": [], "satellites": []}}
-
-    async def _sky_bodies(**_kwargs):
-        return []
 
     async def _update_state(**_kwargs):
         return {"success": True, "result": {"success": True, "data": {"value": {}}}}
@@ -65,7 +169,6 @@ async def test_tracking_read_targets_requester_and_state_change_broadcasts(monke
     monkeypatch.setattr(tracking_handler.crud.trackingstate, "get_tracking_state", _get_state)
     monkeypatch.setattr(tracking_handler, "compiled_satellite_data", _satellite_data)
     monkeypatch.setattr(tracking_handler, "get_ui_tracker_state", _ui_state)
-    monkeypatch.setattr(tracking_handler, "build_observer_sky_bodies", _sky_bodies)
     monkeypatch.setattr(tracking_handler, "update_tracking_state_with_ownership", _update_state)
     monkeypatch.setattr(tracking_handler, "emit_tracker_instances", _emit_instances)
     monkeypatch.setattr(
@@ -104,6 +207,7 @@ async def test_tracking_read_targets_requester_and_state_change_broadcasts(monke
     assert write_reply["success"] is True
     assert [event for event, _ in sio.received["existing-client"]] == expected_events
     assert [event for event, _ in sio.received["joining-client"]] == expected_events * 2
+    assert compiled_modes == [False, False]
 
 
 @pytest.mark.asyncio
