@@ -25,6 +25,8 @@ export const MAPLIBRE_GLOBE_COVERAGE_PADDING = Object.freeze({
 });
 
 const MAPLIBRE_MAX_FIT_BOUNDS_LAT = 85.051129;
+const GLOBE_FIT_MIN_CENTER_PIXELS = 3;
+const GLOBE_FIT_MIN_ZOOM_DELTA = 0.005;
 
 const normalizeCoveragePoint = (point) => {
     const lat = Number(Array.isArray(point) ? point[0] : point?.lat);
@@ -54,8 +56,26 @@ export const fitMapLibreCoverage = ({map, coverage, globe = false}) => {
             (current, point) => current.extend(point),
             new maplibregl.LngLatBounds(fitBoundsPoints[0], fitBoundsPoints[0]),
         );
+        const padding = globe ? MAPLIBRE_GLOBE_COVERAGE_PADDING : MAPLIBRE_COVERAGE_PADDING;
+        if (globe && map.cameraForBounds && map.project && map.getCanvas && map.getZoom) {
+            const camera = map.cameraForBounds(bounds, {padding});
+            const canvas = map.getCanvas();
+            const projectedCenter = camera?.center && map.project(camera.center);
+            if (projectedCenter && canvas?.clientWidth > 0 && canvas?.clientHeight > 0) {
+                const centerPixels = Math.hypot(
+                    projectedCenter.x - canvas.clientWidth / 2,
+                    projectedCenter.y - canvas.clientHeight / 2,
+                );
+                const zoomDelta = Math.abs(camera.zoom - map.getZoom());
+                // Live tracker updates often move the desired globe camera by less
+                // than a pixel. Avoid restarting a costly animation for that drift.
+                if (centerPixels < GLOBE_FIT_MIN_CENTER_PIXELS && zoomDelta < GLOBE_FIT_MIN_ZOOM_DELTA) {
+                    return true;
+                }
+            }
+        }
         map.fitBounds(bounds, {
-            padding: globe ? MAPLIBRE_GLOBE_COVERAGE_PADDING : MAPLIBRE_COVERAGE_PADDING,
+            padding,
             animate: globe,
             duration: globe ? 280 : 0,
         });

@@ -27,4 +27,27 @@ describe('shared satellite coverage camera fit', () => {
             duration: 0,
         });
     });
+
+    it('keeps the globe still for subpixel drift but follows a meaningful camera change', () => {
+        const map = {
+            cameraForBounds: vi.fn(() => ({center: [20, 0], zoom: 3})),
+            getCanvas: () => ({clientWidth: 600, clientHeight: 400}),
+            getZoom: () => 3,
+            project: vi.fn(() => ({x: 301, y: 200})),
+            fitBounds: vi.fn(),
+        };
+        const coverage = getSatelliteCoverageCircle(0, 20, 35786, 360);
+
+        expect(fitMapLibreCoverage({map, coverage, globe: true})).toBe(true);
+        expect(map.fitBounds).not.toHaveBeenCalled();
+
+        map.project.mockReturnValue({x: 310, y: 200});
+        expect(fitMapLibreCoverage({map, coverage, globe: true})).toBe(true);
+        expect(map.fitBounds).toHaveBeenCalledOnce();
+
+        map.project.mockReturnValue({x: 301, y: 200});
+        map.cameraForBounds.mockReturnValue({center: [20, 0], zoom: 3.1});
+        expect(fitMapLibreCoverage({map, coverage, globe: true})).toBe(true);
+        expect(map.fitBounds).toHaveBeenCalledTimes(2);
+    });
 });
