@@ -18,7 +18,7 @@
  */
 
 
-import React, {useImperativeHandle, forwardRef, useCallback, useEffect, useState, useRef, useMemo} from 'react';
+import React, {useImperativeHandle, forwardRef, useCallback, useEffect, useLayoutEffect, useState, useRef, useMemo} from 'react';
 import {Box, Typography, IconButton} from '@mui/material';
 import {UnfoldMore, UnfoldLess} from '@mui/icons-material';
 import {
@@ -260,10 +260,24 @@ const WaterfallSettings = forwardRef(function WaterfallSettings({ playbackRemain
     const {
         maxVFOMarkers,
         selectedVFO,
+        selectedVFOTab,
     } = useSelector((state) => ({
         selectedVFO: state.vfo.selectedVFO,
+        selectedVFOTab: state.vfo.selectedVFOTab,
         maxVFOMarkers: state.vfo.maxVFOMarkers,
     }), shallowEqual);
+
+    const settingsScrollRef = useRef(null);
+    const pendingVfoScrollTopRef = useRef(null);
+
+    useLayoutEffect(() => {
+        if (pendingVfoScrollTopRef.current === null || !settingsScrollRef.current) return;
+
+        // Switching tabs replaces the VFO panel, which can change its height.
+        // Keep the settings column at the position it had when the tab was clicked.
+        settingsScrollRef.current.scrollTop = pendingVfoScrollTopRef.current;
+        pendingVfoScrollTopRef.current = null;
+    }, [selectedVFOTab]);
 
 
     const runningTransmitters = useSelector(selectRunningRigTransmitterOptions);
@@ -1187,6 +1201,7 @@ const WaterfallSettings = forwardRef(function WaterfallSettings({ playbackRemain
     }, [dispatch, socket, store, t]);
 
     const handleVFOTabChange = useCallback((newValue) => {
+        pendingVfoScrollTopRef.current = settingsScrollRef.current?.scrollTop ?? null;
         dispatch(setSelectedVFOTab(newValue));
         // Convert tab index (0-3) to VFO number (1-4) and select the VFO marker
         const vfoNumber = newValue + 1;
@@ -1650,7 +1665,7 @@ const WaterfallSettings = forwardRef(function WaterfallSettings({ playbackRemain
                     </IconButton>
                 </Box>
             </TitleBar>
-            <div style={{overflowY: 'auto', height: '100%', paddingBottom: '29px'}}>
+            <div ref={settingsScrollRef} style={{overflowY: 'auto', overflowAnchor: 'none', height: '100%', paddingBottom: '29px'}}>
 
                 <DevRenderProfiler id="SdrAccordion">
                     <SdrAccordion
