@@ -20,9 +20,9 @@ export function useHardwareCommand({socket, view, commands, trackerId, scope, de
         return () => window.clearInterval(timer);
     }, []);
 
-    // Clock ticks update freshness without rescanning unchanged command history.
-    const command = useMemo(() => selectTrackerCommand(commands, trackerId, scope, deviceId),
-        [commands, trackerId, scope, deviceId]);
+    // Clock ticks expire recent command feedback as well as hardware freshness.
+    const command = useMemo(() => selectTrackerCommand(commands, trackerId, scope, deviceId, now),
+        [commands, trackerId, scope, deviceId, now]);
     return {
         command,
         busy: isCommandOutstanding(command),

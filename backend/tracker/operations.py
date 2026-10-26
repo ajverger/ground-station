@@ -1,13 +1,11 @@
 # Copyright (c) 2026 Efstratios Goudelis
-"""Recoverable command records, independent of hardware and Socket.IO."""
+"""Live command coordination, independent of hardware and Socket.IO."""
 
 import asyncio
 import copy
-import json
-import os
+import math
 import time
 import uuid
-from pathlib import Path
 from typing import Any, Optional
 
 from tracker.contracts import requests_rotator_motion
@@ -16,6 +14,8 @@ ACTIVE = {"submitted", "started", "unknown"}
 TERMINAL = {"succeeded", "failed", "cancelled"}
 ROTATOR_KEYS = {"rotator_state", "rotator_id"}
 RIG_KEYS = {"rig_state", "rig_id", "transmitter_id", "rig_vfo", "vfo1", "vfo2"}
+RECENT_RESULT_SECONDS = 60
+MAX_ACCEPT_AHEAD_SECONDS = 30
 
 
 def command_scopes(changes: dict, action: str = "") -> list[str]:
@@ -29,47 +29,46 @@ def command_scopes(changes: dict, action: str = "") -> list[str]:
     return scopes or ["target"]
 
 
-class OperationRegistry:
-    """One supervisor owns this journal; workers send results through IPC only."""
+def validate_external_request(request: Optional[dict], epoch: str) -> None:
+    """Bound delayed browser/API requests so Stop tombstones can expire."""
+    if not isinstance(request, dict) or not request.get("command_id"):
+        raise ValueError("Command ID is required; refresh tracker state before retrying")
+    if request.get("epoch") != epoch:
+        raise ValueError("Backend epoch changed; refresh tracker state before retrying")
+    deadline = request.get("accept_before")
+    if not isinstance(deadline, (int, float)) or not math.isfinite(deadline):
+        raise ValueError("Command acceptance deadline is required")
+    if deadline > time.time() + MAX_ACCEPT_AHEAD_SECONDS:
+        raise ValueError("Command acceptance deadline is too far in the future")
+    if deadline < time.time():
+        raise ValueError("Request expired before acceptance")
 
-    def __init__(self, path: Optional[Path] = None):
+
+class OperationRegistry:
+    """One supervisor owns live commands; workers send results through IPC only."""
+
+    def __init__(self):
         self.lock = asyncio.Lock()
         self.epoch = str(uuid.uuid4())
         self.revision = 0
         self.records: dict[str, dict[str, Any]] = {}
+        self.latest_by_scope: dict[tuple[str, str], float] = {}
         self.observed: dict[str, dict[str, Any]] = {}
         self.outbox: list[dict] = []
-        self.path = path
-        if path and path.exists():
-            saved = json.loads(path.read_text())
-            self.records = saved.get("records", {})
-            self.revision = saved.get("revision", 0)
-            # Never replay commands after a restart. Retain their identity and
-            # explain why the old execution result can no longer be confirmed.
-            for record in list(self.records.values()):
-                if record["status"] in ACTIVE and not record.get("reconciled"):
-                    self.update(
-                        record["command_id"], "unknown", "Backend restarted; outcome unknown"
-                    )
 
-    def persist(self):
-        if not self.path:
-            return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        # Keep a bounded retry history without evicting outstanding operations.
-        finished = [
-            key
-            for key, row in self.records.items()
-            if row["status"] in TERMINAL or row.get("reconciled")
-        ]
-        for key in finished[:-500]:
-            del self.records[key]
-        temporary = self.path.with_suffix(".tmp")
-        with temporary.open("w") as stream:
-            json.dump({"revision": self.revision, "records": self.records}, stream)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(self.path)
+    def prune(self):
+        """Retain unfinished work and a brief retry/reconnect window."""
+        cutoff = time.time() - RECENT_RESULT_SECONDS
+        for key, row in list(self.records.items()):
+            if (row["status"] in TERMINAL or row.get("reconciled")) and row.get(
+                "updated_at", 0
+            ) < cutoff:
+                del self.records[key]
+
+    def has_newer(self, command: dict, scope: str) -> bool:
+        return self.latest_by_scope.get((command["tracker_id"], scope), 0) > float(
+            command.get("submitted_at") or 0
+        )
 
     def existing(self, command_id: Optional[str], tracker_id: str) -> Optional[dict]:
         record = self.records.get(command_id or "")
@@ -81,7 +80,10 @@ class OperationRegistry:
         self, tracker_id: str, changes: dict, state: dict, request: Optional[dict] = None
     ) -> dict:
         request = request or {}
+        self.prune()
         command_id = str(request.get("command_id") or uuid.uuid4())
+        if request.get("epoch") is not None and request["epoch"] != self.epoch:
+            raise ValueError("Backend restarted; refresh before retrying this command")
         existing = self.existing(command_id, tracker_id)
         if existing:
             return existing
@@ -140,6 +142,7 @@ class OperationRegistry:
         # explicitly cancelled request from becoming a new movement later.
         for cancelled_id in supersedes if is_stop else []:
             if cancelled_id not in self.records:
+                cancelled_at = time.time()
                 self.records[cancelled_id] = {
                     "command_id": cancelled_id,
                     "tracker_id": tracker_id,
@@ -152,6 +155,8 @@ class OperationRegistry:
                     "reason": "Superseded by Stop",
                     "revision": 0,
                     "epoch": self.epoch,
+                    "submitted_at": cancelled_at,
+                    "updated_at": cancelled_at,
                 }
                 self.update(cancelled_id, "cancelled", "Superseded by Stop")
         self.revision += 1
@@ -181,7 +186,8 @@ class OperationRegistry:
             "supersedes": supersedes,
         }
         self.records[command_id] = record
-        self.persist()
+        for scope in scopes:
+            self.latest_by_scope[(tracker_id, scope)] = now
         self.outbox.append(copy.deepcopy(record))
         return copy.deepcopy(record)
 
@@ -201,7 +207,7 @@ class OperationRegistry:
             record["reconciled"] = reconciled
         if snapshot:
             record["snapshot"] = snapshot
-        self.persist()
+        self.prune()
         self.outbox.append(copy.deepcopy(record))
         return copy.deepcopy(record)
 
@@ -229,9 +235,10 @@ class OperationRegistry:
 
     def observe(self, data):
         if not self.can_observe(data):
-            return
+            return []
         tracker_id = data["tracker_id"]
         self.observed[tracker_id] = copy.deepcopy(data)
+        reconciled_ids = []
         for record in list(self.records.values()):
             if (
                 record["tracker_id"] != tracker_id
@@ -250,10 +257,15 @@ class OperationRegistry:
                     "unknown",
                     "Previous worker ended; outcome unconfirmed. Current hardware state restored",
                 )
+                reconciled_ids.append(record["command_id"])
+        return reconciled_ids
 
     def forget_tracker(self, tracker_id: str) -> None:
         """Discard telemetry and release operations owned by a removed tracker."""
         self.observed.pop(tracker_id, None)
+        for key in list(self.latest_by_scope):
+            if key[0] == tracker_id:
+                del self.latest_by_scope[key]
         for record in list(self.records.values()):
             if (
                 record["tracker_id"] == tracker_id
@@ -268,6 +280,7 @@ class OperationRegistry:
                 )
 
     def snapshot(self) -> dict:
+        self.prune()
         return copy.deepcopy(
             {
                 "server_time": time.time(),

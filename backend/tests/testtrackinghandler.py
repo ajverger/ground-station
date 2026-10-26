@@ -1,5 +1,6 @@
 # Copyright (c) 2026 Efstratios Goudelis
 
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -86,7 +87,18 @@ async def test_tracking_read_targets_requester_and_state_change_broadcasts(monke
     assert all(data["tracker_id"] == "target-1" for _, data in sio.received["joining-client"])
 
     write_reply = await tracking_handler.set_tracking_state(
-        sio, {"tracker_id": "target-1", "value": {}}, logger, "existing-client"
+        sio,
+        {
+            "tracker_id": "target-1",
+            "value": {},
+            "operation": {
+                "command_id": "update-1",
+                "epoch": tracking_handler.operations.epoch,
+                "accept_before": time.time() + 10,
+            },
+        },
+        logger,
+        "existing-client",
     )
 
     assert write_reply["success"] is True

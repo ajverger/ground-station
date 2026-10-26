@@ -296,15 +296,14 @@ def test_supervisor_and_worker_reject_movement_while_motion_is_unconfirmed(actio
         registry.accept("target-1", changes, tracker.input_tracking_state, {"action": action})
 
 
-def test_reconciled_unknown_result_survives_journal_and_allows_stop_retry(tmp_path):
-    registry = OperationRegistry(tmp_path / "commands.json")
+def test_reconciled_unknown_result_allows_stop_retry():
+    registry = OperationRegistry()
     state = {"rotator_id": "mount", "rotator_state": "stopped"}
     operation = registry.accept("target-1", {"rotator_state": "stopped"}, state, {"action": "stop"})
     registry.update(operation["command_id"], "unknown", "Stop unconfirmed", reconciled=True)
-    restored = OperationRegistry(registry.path)
-    assert restored.snapshot()["commands"][0]["reconciled"] is True
+    assert registry.snapshot()["commands"][0]["reconciled"] is True
     assert (
-        restored.accept("target-1", {"rotator_state": "stopped"}, state, {"action": "stop"})[
+        registry.accept("target-1", {"rotator_state": "stopped"}, state, {"action": "stop"})[
             "status"
         ]
         == "submitted"

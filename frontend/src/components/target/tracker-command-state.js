@@ -14,6 +14,7 @@ const t = i18n.getFixedT(null, 'target');
 // only confirms acceptance and can arrive after the worker's terminal event.
 export const COMMAND_BUSY = ['sending', 'submitted', 'started', 'unknown'];
 export const COMMAND_TERMINAL = ['succeeded', 'failed', 'cancelled'];
+const RECENT_RESULT_MS = 60000;
 
 export const isCommandOutstanding = command => Boolean(
     command && COMMAND_BUSY.includes(command.status) && !command.reconciled
@@ -51,8 +52,7 @@ export function mergeCommand(state, value) {
     // In particular, a new Stop must win before its acknowledgement arrives.
     incoming.submittedAt = current?.submittedAt ?? (incoming.submittedAt
         - (value.submitted_at ? state.trackerServerOffset || 0 : 0));
-    // Completion feedback expires on the browser's clock, including results
-    // restored from the server journal after reconnecting.
+    // Completion feedback expires on the browser's clock after reconnecting.
     if (value.updated_at) incoming.updatedAt -= state.trackerServerOffset || 0;
     if (current) {
         if (COMMAND_TERMINAL.includes(current.status)) return;
@@ -64,9 +64,10 @@ export function mergeCommand(state, value) {
     state.trackerCommandsById[incoming.commandId] = {...current, ...incoming};
 }
 
-export function selectTrackerCommand(commands, trackerId, scope, deviceId) {
+export function selectTrackerCommand(commands, trackerId, scope, deviceId, now = Date.now()) {
     let selected = null;
     for (const command of Object.values(commands || {})) {
+        if (!isCommandOutstanding(command) && command.updatedAt && now - command.updatedAt > RECENT_RESULT_MS) continue;
         if (command.trackerId !== trackerId && !(deviceId && command.device_ids?.[scope] === deviceId)) continue;
         if (scope && !command.scopes?.includes(scope)) continue;
         const priority = Number(isCommandOutstanding(command)) - Number(isCommandOutstanding(selected));
@@ -78,16 +79,11 @@ export function selectTrackerCommand(commands, trackerId, scope, deviceId) {
 }
 
 export function pruneCommandHistory(state) {
-    const commands = Object.values(state.trackerCommandsById);
-    if (commands.length <= 500) return;
-    const completed = commands
-        .filter(command => !isCommandOutstanding(command))
-        .sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0));
-    // Retain all unsettled work and the latest 500 outcomes. Recent terminal
-    // records also stay through the ACK window to reject delayed acceptance.
-    const cutoff = Date.now() - 30000;
-    for (const command of completed.slice(500)) {
-        if ((command.updatedAt || 0) < cutoff) delete state.trackerCommandsById[command.commandId];
+    const cutoff = Date.now() - RECENT_RESULT_MS;
+    for (const command of Object.values(state.trackerCommandsById)) {
+        if (!isCommandOutstanding(command) && (command.updatedAt || 0) < cutoff) {
+            delete state.trackerCommandsById[command.commandId];
+        }
     }
 }
 

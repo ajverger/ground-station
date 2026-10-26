@@ -28,7 +28,7 @@ function setup() {
         trackerInstances: () => ({instances: [{tracker_id: 'target-2'}]}),
         rigs: () => ({rigs: [{id: 'staged-radio', name: 'Radio', host: 'localhost', port: 4532}]}),
         sdrs: () => ({sdrs: []}),
-    }, preloadedState: {targetSatTrack: {...initial, trackerId: 'target-1', trackerViews: {'target-2': view}}},
+    }, preloadedState: {targetSatTrack: {...initial, trackerId: 'target-1', trackerServerEpoch: 'test-epoch', trackerViews: {'target-2': view}}},
     middleware: getDefault => getDefault({serializableCheck: false})});
     const requests = [];
     const socket = {connected: true, on: vi.fn(), off: vi.fn(),

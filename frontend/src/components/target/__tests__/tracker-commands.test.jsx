@@ -14,11 +14,11 @@ vi.mock('react-i18next', async importOriginal => ({
     ...await importOriginal(), useTranslation: () => ({t: (key, options) => options?.defaultValue ?? key}),
 }));
 
-function setup() {
+function setup(serverEpoch = 'test-epoch') {
     const initial = reducer(undefined, {type: '@@init'});
     const trackingState = {rotator_id: 'mount', rotator_state: 'connected', rig_id: 'radio', rig_state: 'disconnected'};
     const store = configureStore({reducer: {targetSatTrack: reducer, trackerInstances: () => ({instances: [{tracker_id: 'target-1'}]})},
-        preloadedState: {targetSatTrack: {...initial, trackerId: 'target-1', trackingState,
+        preloadedState: {targetSatTrack: {...initial, trackerId: 'target-1', trackerServerEpoch: serverEpoch, trackingState,
             trackerViews: {'target-1': {trackingState}}}},
         middleware: getDefault => getDefault({serializableCheck: false})});
     const requests = [];
@@ -92,36 +92,28 @@ describe('tracker command lifecycle', () => {
         expect(isCommandSpinning(commands.unresolved)).toBe(false);
     });
 
-    it('bounds old outcomes while retaining unresolved work and recent terminal results through late ACKs', () => {
+    it('expires old outcomes while retaining unfinished work and recent results', () => {
         const {store} = setup();
         const now = Date.now() / 1000;
-        // More than 500 recent completions must stay until their ACK window expires.
-        const completed = Array.from({length: 510}, (_, index) => ({
-            ...command(`finished-${index}`, 'rotator', 'succeeded', 3), updated_at: now - index / 1000,
-        }));
         store.dispatch(reconcileTrackerCommands({commands: [
-            {...command('old', 'rotator', 'succeeded', 3), updated_at: now - 60},
-            {...command('restored', 'rotator', 'unknown'), reconciled: true, updated_at: now - 60},
-            {...command('pending'), updated_at: now - 60},
-            {...command('unknown', 'rig', 'unknown'), updated_at: now - 60},
-            ...completed,
+            {...command('old', 'rotator', 'succeeded', 3), updated_at: now - 61},
+            {...command('restored', 'rotator', 'unknown'), reconciled: true, updated_at: now - 61},
+            {...command('pending'), updated_at: now - 61},
+            {...command('unknown', 'rig', 'unknown'), updated_at: now - 61},
+            {...command('recent', 'rotator', 'succeeded', 3), updated_at: now - 1},
         ]}));
-        store.dispatch(setTrackerCommandStatus(command('finished-509')));
         let commands = store.getState().targetSatTrack.trackerCommandsById;
         expect(commands.old).toBeUndefined();
         expect(commands.restored).toBeUndefined();
         expect(commands.pending.status).toBe('submitted');
         expect(commands.unknown.status).toBe('unknown');
-        expect(commands['finished-509'].status).toBe('succeeded');
-        expect(Object.keys(commands)).toHaveLength(512);
+        expect(commands.recent.status).toBe('succeeded');
 
-        const clock = vi.spyOn(Date, 'now').mockReturnValue((now + 31) * 1000);
+        const clock = vi.spyOn(Date, 'now').mockReturnValue((now + 61) * 1000);
         try {
             store.dispatch(reconcileTrackerCommands({commands: []}));
             commands = store.getState().targetSatTrack.trackerCommandsById;
-            expect(Object.keys(commands)).toHaveLength(502);
-            expect(commands['finished-499']).toBeDefined();
-            expect(commands['finished-500']).toBeUndefined();
+            expect(commands.recent).toBeUndefined();
             expect(commands.pending.status).toBe('submitted');
             expect(commands.unknown.status).toBe('unknown');
         } finally {
@@ -168,7 +160,7 @@ describe('tracker command lifecycle', () => {
                 trackerInstances: () => ({instances: []}),
             },
             preloadedState: {
-                targetSatTrack: {...initial, trackerId: 'target-1'},
+                targetSatTrack: {...initial, trackerId: 'target-1', trackerServerEpoch: 'test-epoch'},
             },
             middleware: getDefault => getDefault({serializableCheck: false}),
         });
@@ -235,6 +227,45 @@ describe('tracker command lifecycle', () => {
         expect(store.getState().targetSatTrack.trackerCommandsById[id].status).toBe('unknown');
         store.dispatch(reconcileTrackerCommands({commands: [command(id, 'rotator', 'succeeded', 4)]}));
         expect(store.getState().targetSatTrack.trackerCommandsById[id].status).toBe('succeeded');
+    });
+
+    it('fences requests to one backend epoch and preserves uncertainty after restart', async () => {
+        const {store, socket, requests} = setup();
+        store.dispatch(reconcileTrackerCommands({epoch: 'old-worker', commands: []}));
+        const result = store.dispatch(moveRotatorToPosition({socket, trackerId: 'target-1', rotatorId: 'mount', az: 120, el: 45}));
+        const id = requests[0].request.data.command_id;
+        expect(requests[0].request.data.epoch).toBe('old-worker');
+        requests[0].ack(new Error('timeout'));
+        await result;
+        store.dispatch(setTrackerCommandStatus(command('previous', 'rig', 'succeeded')));
+
+        store.dispatch(reconcileTrackerCommands({epoch: 'new-worker', server_time: Date.now() / 1000 + 30, commands: []}));
+        const oldCommand = store.getState().targetSatTrack.trackerCommandsById[id];
+        expect(oldCommand.status).toBe('unknown');
+        expect(oldCommand.reconciled).toBe(true);
+        expect(oldCommand.reason).toContain('Backend restarted');
+        expect(store.getState().targetSatTrack.trackerCommandsById.previous).toBeUndefined();
+    });
+
+    it('fetches the backend epoch before the first hardware command', async () => {
+        const {store, socket, requests} = setup(null);
+        const result = store.dispatch(moveRotatorToPosition({socket, trackerId: 'target-1', rotatorId: 'mount', az: 120, el: 45}));
+        expect(requests[0].request.cmd).toBe('get-tracker-commands');
+        requests[0].ack(null, {success: true, data: {epoch: 'new-worker', server_time: Date.now() / 1000, commands: [], trackers: {}}});
+        await vi.waitFor(() => expect(requests).toHaveLength(2));
+        expect(requests[1].request.data.epoch).toBe('new-worker');
+        requests[1].ack(null, {success: true, data: {}});
+        await result;
+    });
+
+    it('does not claim an expired command was rejected after its result was pruned', () => {
+        const {store} = setup();
+        store.dispatch(setTrackerCommandStatus({...command('lost'), accept_before: 10}));
+        store.dispatch(reconcileTrackerCommands({epoch: 'test-epoch', server_time: 100, commands: []}));
+        const lost = store.getState().targetSatTrack.trackerCommandsById.lost;
+        expect(lost.status).toBe('unknown');
+        expect(lost.reconciled).toBe(true);
+        expect(lost.reason).toContain('unavailable');
     });
 
     it('does not emit when disconnected', async () => {

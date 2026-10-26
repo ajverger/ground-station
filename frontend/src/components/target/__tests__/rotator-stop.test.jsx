@@ -59,7 +59,7 @@ describe('rotator Stop recovery', () => {
             targetSatTrack: reducer,
             trackerInstances: () => ({instances: [{tracker_id: 'target-1'}]}),
             rotators: () => ({rotators: [{id: 'mount', name: 'Mount', host: 'localhost', port: 4533}]}),
-        }, preloadedState: {targetSatTrack: {...initial, trackerId: 'target-1', trackerViews: {'target-1': view},
+        }, preloadedState: {targetSatTrack: {...initial, trackerId: 'target-1', trackerServerEpoch: 'test-epoch', trackerViews: {'target-1': view},
             trackerCommandsById: {stop: {commandId: 'stop', trackerId: 'target-1', scopes: ['rotator'],
                 action: 'stop', status: 'unknown', reconciled: true, submittedAt: Date.now() - 1000}}}},
         middleware: getDefault => getDefault({serializableCheck: false})});

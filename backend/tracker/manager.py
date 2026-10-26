@@ -679,24 +679,6 @@ class TrackerManager:
         current_value = (current_state_reply.get("data") or {}).get("value", {})
         if not current_value:
             return
-        recovered = [
-            record
-            for record in operations.records.values()
-            if record["tracker_id"] == self.tracker_id
-            and record["status"] == "unknown"
-            and not record.get("reconciled")
-            and record.get("epoch") != operations.epoch
-        ]
-        if recovered:
-            current_value = dict(current_value)
-            for record in recovered:
-                for scope in record["scopes"]:
-                    if scope in {"rotator", "rig"}:
-                        current_value[f"{scope}_state"] = "disconnected"
-            async with AsyncSessionLocal() as dbsession:
-                await crud.trackingstate.set_tracking_state(
-                    dbsession, {"name": self.tracking_state_name, "value": current_value}
-                )
         self.current_tracking_state = dict(current_value)
         await self._sync_tracker_context(self.current_tracking_state)
 
@@ -883,12 +865,7 @@ class TrackerManager:
                     field = f"{scope}_state"
                     if scope not in {"rotator", "rig"} or field not in actual:
                         continue
-                    newer = any(
-                        row["tracker_id"] == self.tracker_id
-                        and scope in row["scopes"]
-                        and row.get("submitted_at", 0) > command.get("submitted_at", 0)
-                        for row in operations.records.values()
-                    )
+                    newer = operations.has_newer(command, scope)
                     if (
                         not newer
                         and desired.get(f"{scope}_id") == command["device_ids"].get(scope)

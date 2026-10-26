@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Efstratios Goudelis
 
 from contextlib import asynccontextmanager
+from time import time
 
 import pytest
 import pytest_asyncio
@@ -8,6 +9,14 @@ import pytest_asyncio
 from db.models import TrackingState
 from handlers.entities import hardware
 from tracker.operations import OperationRegistry
+
+
+def operation_request(command_id: str) -> dict:
+    return {
+        "command_id": command_id,
+        "epoch": hardware.operations.epoch,
+        "accept_before": time() + 10,
+    }
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -85,7 +94,9 @@ async def test_stop_rotator_queues_a_dedicated_worker_command(monkeypatch):
         lambda: {"instances": [{"tracker_id": "target-1", "is_alive": True}]},
     )
 
-    result = await hardware.stop_rotator(None, {"tracker_id": "target-1"}, None, "sid")
+    result = await hardware.stop_rotator(
+        None, {"tracker_id": "target-1", **operation_request("stop-1")}, None, "sid"
+    )
 
     assert result["success"] is True
     command, data = manager.commands[0]
@@ -113,7 +124,9 @@ async def test_stop_rotator_can_interrupt_automatic_tracking(monkeypatch):
         "get_tracker_instances_payload",
         lambda: {"instances": [{"tracker_id": "target-1", "is_alive": True}]},
     )
-    result = await hardware.stop_rotator(None, {"tracker_id": "target-1"}, None, "sid")
+    result = await hardware.stop_rotator(
+        None, {"tracker_id": "target-1", **operation_request("stop-2")}, None, "sid"
+    )
     assert result["success"] is True
     assert manager.commands[0][1]["operation"]["changes"] == {"rotator_state": "stopped"}
 
@@ -143,7 +156,7 @@ async def test_move_rotator_rejects_parked_rotator(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_move_rotator_limits_overlap_rotators_to_360_degrees(monkeypatch):
+async def test_move_rotator_limits_overlap_rotators_to_360_degrees(monkeypatch, db_session):
     class _Manager:
         def __init__(self):
             self.commands = []
@@ -156,7 +169,7 @@ async def test_move_rotator_limits_overlap_rotators_to_360_degrees(monkeypatch):
 
     class _SessionContext:
         async def __aenter__(self):
-            return object()
+            return db_session
 
         async def __aexit__(self, exc_type, exc_value, traceback):
             return False
@@ -185,7 +198,7 @@ async def test_move_rotator_limits_overlap_rotators_to_360_degrees(monkeypatch):
 
     allowed = await hardware.move_rotator(
         None,
-        {"tracker_id": "target-1", "az": 360, "el": 45},
+        {"tracker_id": "target-1", "az": 360, "el": 45, **operation_request("move-1")},
         None,
         "sid",
     )

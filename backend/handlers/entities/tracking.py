@@ -38,7 +38,7 @@ from tracker.contracts import (
 )
 from tracker.data import compiled_satellite_data, get_ui_tracker_state
 from tracker.instances import emit_tracker_instances
-from tracker.operations import operations
+from tracker.operations import operations, validate_external_request
 from tracker.runner import (
     get_assigned_rotator_for_tracker,
     get_tracker_instances_payload,
@@ -533,6 +533,11 @@ async def set_tracking_state(
                     "missing_fields": missing_fields,
                 },
             }
+
+    try:
+        validate_external_request((data or {}).get("operation"), operations.epoch)
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
 
     update_reply: Dict[str, Any] = await update_tracking_state_with_ownership(
         tracker_id=tracker_id,

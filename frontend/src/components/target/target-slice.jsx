@@ -462,12 +462,26 @@ export const sendNudgeCommand = createAsyncThunk(
     }
 );
 
-async function submitCommand(socket, cmd, data, operation, dispatch, rejectWithValue, serverOffset = 0) {
-    operation.accept_before = (Date.now() + serverOffset) / 1000 + 10;
-    if (data.operation) data.operation.accept_before = operation.accept_before;
-    else data.accept_before = operation.accept_before;
+async function submitCommand(socket, cmd, data, operation, dispatch, rejectWithValue, serverOffset = 0, serverEpoch = null) {
     dispatch(setTrackerCommandStatus({...operation, status: 'sending'}));
     try {
+        if (!serverEpoch) {
+            // A control can become available before reconnect bootstrap finishes.
+            // Fetch the epoch before sending a command to the current backend.
+            const sentAt = Date.now();
+            const snapshot = await callTrackerApi(socket, 'get-tracker-commands', {});
+            serverEpoch = snapshot.epoch;
+            serverOffset = snapshot.server_time * 1000 - (sentAt + Date.now()) / 2;
+            dispatch(reconcileTrackerCommands({...snapshot, serverOffset}));
+        }
+        if (!serverEpoch) throw {message: 'Tracker status unavailable; refresh before sending a command', uncertain: false};
+        operation.accept_before = (Date.now() + serverOffset) / 1000 + 10;
+        operation.epoch = serverEpoch;
+        if (data.operation) data.operation.accept_before = operation.accept_before;
+        else {
+            data.accept_before = operation.accept_before;
+            data.epoch = serverEpoch;
+        }
         const response = await callTrackerApi(socket, cmd, data);
         if (response?.command) {
             dispatch(setTrackerCommandStatus(response.command));
@@ -485,7 +499,8 @@ export const moveRotatorToPosition = createAsyncThunk(
     async ({socket, trackerId, rotatorId, az, el}, {getState, dispatch, rejectWithValue, requestId}) => {
         const operation = {command_id: requestId, tracker_id: trackerId, action: 'move',
             scope: 'rotator', scopes: ['rotator'], device_ids: {rotator: rotatorId}, position: {az, el}};
-        return submitCommand(socket, 'move-rotator', {...operation, az, el}, operation, dispatch, rejectWithValue, getState().targetSatTrack.trackerServerOffset || 0);
+        const state = getState().targetSatTrack;
+        return submitCommand(socket, 'move-rotator', {...operation, az, el}, operation, dispatch, rejectWithValue, state.trackerServerOffset || 0, state.trackerServerEpoch);
     }
 );
 
@@ -497,7 +512,8 @@ export const stopRotator = createAsyncThunk(
             .map(cmd => cmd.commandId);
         const operation = {command_id: requestId, tracker_id: trackerId, action: 'stop', scope: 'rotator',
             scopes: ['rotator'], device_ids: {rotator: rotatorId}, requested_state: {rotator_state: 'stopped'}, supersedes};
-        return submitCommand(socket, 'stop-rotator', operation, operation, dispatch, rejectWithValue, getState().targetSatTrack.trackerServerOffset || 0);
+        const state = getState().targetSatTrack;
+        return submitCommand(socket, 'stop-rotator', operation, operation, dispatch, rejectWithValue, state.trackerServerOffset || 0, state.trackerServerEpoch);
     }
 );
 
@@ -643,7 +659,8 @@ export const setTrackingStateInBackend = createAsyncThunk(
         // A brand new tracker still needs its complete initial state.
         const value = exists ? {...changes} : {...data, ...changes};
         delete value.tracker_id;
-        const response = await submitCommand(socket, 'set-tracking-state', {tracker_id: trackerId, value, operation}, operation, dispatch, rejectWithValue, getState().targetSatTrack.trackerServerOffset || 0);
+        const latest = getState().targetSatTrack;
+        const response = await submitCommand(socket, 'set-tracking-state', {tracker_id: trackerId, value, operation}, operation, dispatch, rejectWithValue, latest.trackerServerOffset || 0, latest.trackerServerEpoch);
         return response;
     }
 );
@@ -809,6 +826,7 @@ const targetSatTrackSlice = createSlice({
     name: 'targetSatTrack',
     initialState: {
         trackerCommandsById: {},
+        trackerServerEpoch: null,
         trackerId: DEFAULT_TRACKER_ID,
         trackerViews: {},
         groupId: "",
@@ -1563,13 +1581,37 @@ const targetSatTrackSlice = createSlice({
         },
         reconcileTrackerCommands: (state, action) => {
             const snapshot = action.payload || {};
+            const restarted = Boolean(state.trackerServerEpoch && snapshot.epoch && state.trackerServerEpoch !== snapshot.epoch);
+            if (restarted) {
+                for (const command of Object.values(state.trackerCommandsById)) {
+                    if (!isCommandOutstanding(command)) {
+                        delete state.trackerCommandsById[command.commandId];
+                        continue;
+                    }
+                    command.status = 'unknown';
+                    command.reconciled = true;
+                    command.updatedAt = Date.now();
+                    command.reason = 'Backend restarted; previous command outcome unknown';
+                }
+            }
+            if (snapshot.epoch) state.trackerServerEpoch = snapshot.epoch;
             if (Number.isFinite(snapshot.serverOffset)) state.trackerServerOffset = snapshot.serverOffset;
             const ids = new Set((snapshot.commands || []).map(command => command.command_id));
             for (const command of snapshot.commands || []) mergeCommand(state, command);
             for (const command of Object.values(state.trackerCommandsById)) {
-                if (isCommandOutstanding(command) && !ids.has(command.commandId) && snapshot.server_time > command.accept_before) {
-                    command.status = 'failed';
-                    command.reason = 'Request was not accepted before its deadline';
+                if (!isCommandOutstanding(command) || ids.has(command.commandId)) continue;
+                if (command.epoch && snapshot.epoch && command.epoch !== snapshot.epoch) {
+                    command.status = 'unknown';
+                    command.reconciled = true;
+                    command.updatedAt = Date.now();
+                    command.reason = 'Backend restarted; previous command outcome unknown';
+                } else if (snapshot.server_time > command.accept_before) {
+                    // The server may already have expired a completed result.
+                    // Absence cannot prove that the request was never accepted.
+                    command.status = 'unknown';
+                    command.reconciled = true;
+                    command.updatedAt = Date.now();
+                    command.reason = 'Command result unavailable; check current hardware state';
                 }
             }
             pruneCommandHistory(state);

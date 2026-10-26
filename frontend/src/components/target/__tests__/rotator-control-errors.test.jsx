@@ -51,6 +51,7 @@ function setup() {
             targetSatTrack: {
                 ...initial,
                 trackerId: 'target-1',
+                trackerServerEpoch: 'test-epoch',
                 trackerViews: {'target-1': view},
             },
         },

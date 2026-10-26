@@ -17,7 +17,7 @@ from tracker import messages as messagemodule
 from tracker.execution import WorkerOperations
 from tracker.ipc import TRACKER_MSG_SET_SATELLITE_EPHEMERIS, TRACKER_MSG_SET_TRACKING_STATE
 from tracker.manager import TrackerManager
-from tracker.operations import OperationRegistry
+from tracker.operations import OperationRegistry, validate_external_request
 
 STATE = {
     "rotator_id": "mount",
@@ -153,20 +153,57 @@ def test_deadline_advances_without_telemetry_and_cannot_be_downgraded():
     assert registry.update("move", "succeeded") is None
 
 
-def test_recovery_retains_ids_without_replaying_and_reconciles_after_fresh_snapshot(tmp_path):
-    journal = tmp_path / "commands.json"
-    first = OperationRegistry(journal)
+def test_restart_drops_command_results_and_rejects_old_epoch():
+    first = OperationRegistry()
     request(first)
-    recovered = OperationRegistry(journal)
-    assert recovered.records["move"]["status"] == "unknown"
-    assert request(recovered)["status"] == "unknown"
-    recovered.observe({"tracker_id": "target-1", "worker_generation": "new", "sequence": 1})
-    assert recovered.records["move"]["reconciled"] is True
-    request(recovered, "new-move")
-    recovered.update("new-move", "succeeded")
-    again = OperationRegistry(journal)
-    assert again.records["move"]["reconciled"] is True
-    assert again.records["new-move"]["status"] == "succeeded"
+    recovered = OperationRegistry()
+    assert recovered.snapshot()["commands"] == []
+    with pytest.raises(ValueError, match="Backend restarted"):
+        recovered.accept(
+            "target-1", {}, STATE, {"command_id": "move", "action": "move", "epoch": first.epoch}
+        )
+    assert request(recovered, "new-move")["status"] == "submitted"
+
+
+@pytest.mark.asyncio
+async def test_restart_rehydrates_saved_tracking_modes(monkeypatch, db_session):
+    saved = {**STATE, "rotator_state": "tracking", "rig_state": "tracking"}
+    manager = TrackerManager(queue_to_tracker=queue.Queue(), tracker_id="target-1")
+    db_session.add(TrackingState(name=manager.tracking_state_name, value=saved))
+    await db_session.commit()
+
+    @asynccontextmanager
+    async def session():
+        yield db_session
+
+    push_context = AsyncMock()
+    monkeypatch.setattr(managermodule, "AsyncSessionLocal", session)
+    monkeypatch.setattr(manager, "_sync_tracker_context", push_context)
+
+    await manager.sync_tracking_state_from_db()
+
+    assert manager.current_tracking_state == saved
+    push_context.assert_awaited_once_with(saved)
+
+
+def test_completed_results_expire_from_live_registry():
+    registry = OperationRegistry()
+    request(registry)
+    registry.update("move", "succeeded")
+    registry.records["move"]["updated_at"] = time.time() - 61
+    assert registry.snapshot()["commands"] == []
+
+
+def test_external_requests_require_epoch_and_short_acceptance_deadline():
+    registry = OperationRegistry()
+    valid = {"command_id": "move", "epoch": registry.epoch, "accept_before": time.time() + 10}
+    validate_external_request(valid, registry.epoch)
+    with pytest.raises(ValueError, match="epoch"):
+        validate_external_request({**valid, "epoch": "old"}, registry.epoch)
+    with pytest.raises(ValueError, match="deadline"):
+        validate_external_request({**valid, "accept_before": time.time() + 60}, registry.epoch)
+    with pytest.raises(ValueError, match="required"):
+        validate_external_request({**valid, "accept_before": None}, registry.epoch)
 
 
 def test_expired_or_reassigned_request_is_rejected():

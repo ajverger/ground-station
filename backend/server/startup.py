@@ -229,10 +229,10 @@ async def lifespan(fastapiapp: FastAPI):
     process_manager.set_event_loop(event_loop)
     logger.info("ProcessManager initialized with event loop")
 
-    # Keep operation outcomes across reconnects and backend restarts. The journal
-    # follows the configured DB, including installations using an absolute path.
-    recovered = OperationRegistry(Path(arguments.db).with_suffix(".commands.json"))
-    operations.__dict__.update(recovered.__dict__)
+    # The command registry belongs to this process. Saved tracking state is
+    # restored below, including hardware modes that should reconnect.
+    operations.__dict__.update(OperationRegistry().__dict__)
+    Path(arguments.db).with_suffix(".commands.json").unlink(missing_ok=True)
     asyncio.create_task(handle_command_updates(sio))
     asyncio.create_task(handle_tracker_messages(sio))
     await restore_tracker_instances_from_db()

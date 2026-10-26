@@ -36,7 +36,7 @@ from hardware.soapysdrbrowser import discovered_servers
 from server import runtimestate
 from session.store import active_sdr_clients
 from tracker.contracts import InvalidTrackerIdError, get_tracking_state_name, require_tracker_id
-from tracker.operations import operations
+from tracker.operations import operations, validate_external_request
 from tracker.runner import (
     get_all_tracker_managers,
     get_existing_tracker_manager,
@@ -755,6 +755,7 @@ async def _move_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) -
         }
 
     request = {**(data or {}), "action": "move", "position": {"az": target_az, "el": target_el}}
+    validate_external_request(request, operations.epoch)
     operation = operations.accept(tracker_id, {}, tracking_state, request)
     manager.send_command(
         TrackerCommands.MOVE_TO_POSITION,
@@ -834,12 +835,14 @@ async def _stop_rotator(sio: Any, data: Optional[Dict], logger: Any, sid: str) -
         }
 
     updated = {**tracking_state, "rotator_state": "stopped"}
+    validate_external_request(data, operations.epoch)
     operation = operations.accept(
         tracker_id, {"rotator_state": "stopped"}, updated, {**(data or {}), "action": "stop"}
     )
     async with AsyncSessionLocal() as dbsession:
         reply = await crud.trackingstate.set_tracking_state(
-            dbsession, {"name": get_tracking_state_name(tracker_id), "value": updated}
+            dbsession,
+            {"name": get_tracking_state_name(tracker_id), "value": updated},
         )
     if not reply.get("success"):
         operations.update(operation["command_id"], "failed", "Could not persist Stop")

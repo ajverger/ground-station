@@ -230,7 +230,9 @@ def test_instances_payload_uses_target_number_only_for_target_slots(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_startup_restore_removes_stale_observation_tracker_state(db_engine, monkeypatch):
+async def test_startup_restores_tracking_modes_and_removes_stale_observation_state(
+    db_engine, monkeypatch
+):
     async_session = async_sessionmaker(
         db_engine,
         class_=AsyncSession,
@@ -247,9 +249,9 @@ async def test_startup_restore_removes_stale_observation_tracker_state(db_engine
                     value={
                         "norad_id": 25544,
                         "rotator_id": "rot-1",
-                        "rotator_state": "connected",
-                        "rig_id": "none",
-                        "rig_state": "disconnected",
+                        "rotator_state": "tracking",
+                        "rig_id": "rig-1",
+                        "rig_state": "tracking",
                     },
                 ),
                 TrackingState(
@@ -292,7 +294,9 @@ async def test_startup_restore_removes_stale_observation_tracker_state(db_engine
     assert assignment_calls == [("target-1", "rot-1")]
 
     async with async_session() as session:
-        result = await session.execute(select(TrackingState.name).order_by(TrackingState.name))
-        state_names = result.scalars().all()
+        result = await session.execute(select(TrackingState).order_by(TrackingState.name))
+        states = result.scalars().all()
 
-    assert state_names == [target_state_name]
+    assert [state.name for state in states] == [target_state_name]
+    assert states[0].value["rotator_state"] == "tracking"
+    assert states[0].value["rig_state"] == "tracking"

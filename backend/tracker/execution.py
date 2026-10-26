@@ -214,7 +214,7 @@ class WorkerOperations:
             if stop_result and stop_result[0] != "succeeded":
                 # Recovery is finished, but an unanswered S remains unconfirmed.
                 # A hardware motion flag keeps movement locked independently of
-                # the command journal, allowing Stop/Disconnect without polling forever.
+                # the command registry, allowing Stop/Disconnect without polling forever.
                 status, reason = stop_result
                 self.emit(operation, status, reason, reconciled=status == "unknown")
                 del self.pending[key]
