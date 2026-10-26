@@ -32,7 +32,7 @@ export default function ErrorDialog({open, message, onClose, title}) {
                     {title || t('error')}
                 </Typography>
             </DialogTitle>
-            <DialogContent>
+            <DialogContent sx={{'&.MuiDialogContent-root': {pt: 2}}}>
                 <DialogContentText id={descriptionId} sx={{whiteSpace: 'pre-wrap', wordBreak: 'break-word'}}>
                     {message}
                 </DialogContentText>
