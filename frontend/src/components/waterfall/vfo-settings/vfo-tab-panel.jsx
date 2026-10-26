@@ -78,6 +78,22 @@ const VfoTabPanelComponent = ({
                     audioStatus={audioStatus}
                 />
 
+                {/* Transmitter Lock */}
+                <TransmitterLockSelect
+                    vfoIndex={vfoIndex}
+                    vfoActive={vfoActive[vfoIndex]}
+                    lockedTransmitterId={vfo?.lockedTransmitterId}
+                    lockedTransmitterTrackerId={vfo?.lockedTransmitterTrackerId}
+                    transmitters={transmitters}
+                    onVFOPropertyChange={onVFOPropertyChange}
+                    centerFrequency={centerFrequency}
+                    sampleRate={sampleRate}
+                    onCenterFrequencyChange={onCenterFrequencyChange}
+                />
+
+                {/* Locked Transmitter Alert */}
+                <LockedTransmitterAlert lockedTransmitterId={vfo?.lockedTransmitterId} />
+
                 {/* Meters */}
                 <VfoLiveMeters
                     vfoIndex={vfoIndex}
@@ -105,22 +121,6 @@ const VfoTabPanelComponent = ({
                 />
 
             </Box>
-
-            {/* Transmitter Lock */}
-            <TransmitterLockSelect
-                vfoIndex={vfoIndex}
-                vfoActive={vfoActive[vfoIndex]}
-                lockedTransmitterId={vfo?.lockedTransmitterId}
-                lockedTransmitterTrackerId={vfo?.lockedTransmitterTrackerId}
-                transmitters={transmitters}
-                onVFOPropertyChange={onVFOPropertyChange}
-                centerFrequency={centerFrequency}
-                sampleRate={sampleRate}
-                onCenterFrequencyChange={onCenterFrequencyChange}
-            />
-
-            {/* Locked Transmitter Alert */}
-            <LockedTransmitterAlert lockedTransmitterId={vfo?.lockedTransmitterId} />
 
             {/* Rotary Encoder */}
             <Box sx={{ mt: 1 }}>
