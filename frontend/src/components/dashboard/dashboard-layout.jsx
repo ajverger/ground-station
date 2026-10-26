@@ -1166,6 +1166,9 @@ export default function Layout() {
 
     // Helper function to get tooltip text
     const getTooltipText = (item, drawerExpanded) => {
+        if (item.segment === 'tracking') {
+            return item.tooltip;
+        }
         if (!drawerExpanded) {
             // For scheduler, show comprehensive dynamic tooltip
             if (item.segment === 'scheduler') {

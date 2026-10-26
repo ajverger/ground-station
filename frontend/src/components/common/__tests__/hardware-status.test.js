@@ -7,6 +7,7 @@ import {
     resolveRigLedStatus,
     resolveRotatorLedStatus,
     resolveTabHardwareLedStatus,
+    selectTrackingNavigationStatus,
 } from '../hardware-status.js';
 
 describe('resolveAssignedHardwareId', () => {
@@ -20,6 +21,64 @@ describe('resolveAssignedHardwareId', () => {
 
     it('returns "none" when every source is unset', () => {
         expect(resolveAssignedHardwareId('', null, undefined)).toBe('none');
+    });
+});
+
+describe('tracking navigation hardware summary', () => {
+    const now = 100000;
+    const makeState = (instances, trackerViews, connected = true, connectedAt = 0) => ({
+        trackerInstances: { instances },
+        targetSatTrack: { trackerViews },
+        dashboard: { connected, connectedAt },
+    });
+    const liveView = (overrides = {}) => ({
+        hardwareObservedAt: now,
+        hardwareReceivedAt: now - 1000,
+        ...overrides,
+    });
+
+    it('shows rotator and rig states independently for the whole fleet', () => {
+        const instances = [
+            { tracker_id: 'target-1', rotator_id: 'rot-1', rig_id: 'rig-1' },
+            { tracker_id: 'target-2', rotator_id: 'rot-2', rig_id: 'none' },
+        ];
+        const trackerViews = {
+            'target-1': liveView({ rotatorData: { connected: true, tracking: true }, rigData: { connected: true, tracking: true } }),
+            'target-2': liveView({ rotatorData: { connected: true, motion_unconfirmed: true } }),
+        };
+
+        const summary = selectTrackingNavigationStatus(makeState(instances, trackerViews), now);
+        expect(summary.rotator).toEqual({
+            status: 'motion_unconfirmed', assignedCount: 2,
+            counts: { tracking: 1, motion_unconfirmed: 1 },
+        });
+        expect(summary.rig).toEqual({ status: 'tracking', assignedCount: 1, counts: { tracking: 1 } });
+    });
+
+    it('counts shared hardware once and uses its newest live report', () => {
+        const instances = [
+            { tracker_id: 'target-1', rotator_id: 'rot-1' },
+            { tracker_id: 'target-2', rotator_id: 'rot-1' },
+        ];
+        const trackerViews = {
+            'target-1': liveView({ hardwareReceivedAt: now - 2000, rotatorData: { connected: true, tracking: true } }),
+            'target-2': liveView({ hardwareReceivedAt: now - 1000, rotatorData: { connected: true, parked: true } }),
+        };
+
+        expect(selectTrackingNavigationStatus(makeState(instances, trackerViews), now).rotator)
+            .toEqual({ status: 'parked', assignedCount: 1, counts: { parked: 1 } });
+    });
+
+    it('does not present cached activity as live after a disconnect or stale report', () => {
+        const instances = [{ tracker_id: 'target-1', rotator_id: 'rot-1', rig_id: 'rig-1' }];
+        const trackerViews = {
+            'target-1': liveView({ rotatorData: { connected: true, tracking: true }, rigData: { connected: true } }),
+        };
+
+        expect(selectTrackingNavigationStatus(makeState(instances, trackerViews, false), now).rotator.status).toBe('unknown');
+        expect(selectTrackingNavigationStatus(makeState(instances, trackerViews), now + 16000).rig.status).toBe('unknown');
+        expect(selectTrackingNavigationStatus(makeState(instances, trackerViews, true, now - 500), now).rig.status).toBe('unknown');
+        expect(selectTrackingNavigationStatus(makeState([], trackerViews), now).rotator.assignedCount).toBe(0);
     });
 });
 

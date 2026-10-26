@@ -18,7 +18,6 @@
  */
 
 import PublicIcon from '@mui/icons-material/Public';
-import GpsFixedIcon from '@mui/icons-material/GpsFixed';
 import EngineeringIcon from '@mui/icons-material/Engineering';
 import {Satellite03Icon, Saturn01Icon} from "hugeicons-react";
 import MemoryIcon from '@mui/icons-material/Memory';
@@ -40,6 +39,7 @@ import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
 import EventNoteIcon from '@mui/icons-material/EventNote';
 import { useSelector } from 'react-redux';
 import { useLocation } from 'react-router-dom';
+import { TrackingIconWithStatus, TrackingStatusTooltip } from './tracking-navigation.jsx';
 
 // Helper component to wrap icons with overlay indicators
 const IconWithOverlay = ({ children, showOverlay = false, overlayType = 'spinner', showLeftOverlay = false, leftOverlayType = null }) => {
@@ -360,7 +360,8 @@ export const getNavigation = ({ isAdmin = false } = {}) => {
         {
             segment: 'tracking',
             title: i18n.t('live_tracking', { ns: 'navigation', defaultValue: 'Live Tracking' }),
-            icon: <GpsFixedIcon/>,
+            icon: <TrackingIconWithStatus />,
+            tooltip: <TrackingStatusTooltip />,
         },
         {
             segment: 'waterfall',

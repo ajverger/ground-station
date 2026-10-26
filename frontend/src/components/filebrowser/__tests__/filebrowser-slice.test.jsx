@@ -2,6 +2,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { expect, test, vi } from 'vitest';
 import reducer, {
     deleteLibraryItems,
+    checkForNewFiles,
     fetchFiles,
     fetchPurgePreview,
     startLibraryPurge,
@@ -13,6 +14,7 @@ import reducer, {
     setAllFilters,
     toggleFilter,
     reconcileFileBrowserPersistedState,
+    markFileBrowserVisited,
 } from '../filebrowser-slice.jsx';
 
 function createStore() {
@@ -84,6 +86,56 @@ test('queries one server-side page and stores its total', async () => {
         { id: 'audio:voice.wav', type: 'audio', filename: 'voice.wav' },
     ]);
     expect(store.getState().filebrowser.total).toBe(51);
+});
+
+test('checks the newest file independently of the visible page and keeps the notification until a visit', async () => {
+    const store = createStore();
+    store.dispatch(setPage(3));
+    store.dispatch(setAllFilters(false));
+    store.dispatch(setPage(3));
+    const created = new Date(Date.now() + 1000).toISOString();
+    const socket = {
+        connected: true,
+        emit: vi.fn((event, payload, callback) => {
+            expect(event).toBe('api.call');
+            expect(payload).toEqual({
+                cmd: 'filebrowser.query',
+                data: { sortBy: 'created', sortOrder: 'desc', page: 1, pageSize: 1 },
+            });
+            callback({ success: true, data: { items: [{ id: 'new-file', created }] } });
+        }),
+    };
+
+    await store.dispatch(checkForNewFiles({ socket })).unwrap();
+    expect(store.getState().filebrowser.hasNewFiles).toBe(true);
+    expect(store.getState().filebrowser.page).toBe(3);
+    expect(Object.values(store.getState().filebrowser.filters).every((enabled) => !enabled)).toBe(true);
+
+    const visiblePageSocket = {
+        connected: true,
+        emit: (_event, _payload, callback) => callback({ success: true, data: { page: 3, items: [], total: 0 } }),
+    };
+    await store.dispatch(fetchFiles({ socket: visiblePageSocket, page: 3 }));
+    expect(store.getState().filebrowser.hasNewFiles).toBe(true);
+
+    store.dispatch(markFileBrowserVisited());
+    expect(store.getState().filebrowser.hasNewFiles).toBe(false);
+});
+
+test('an older file or delayed check cannot create or clear a new-files notification', async () => {
+    const store = createStore();
+    const oldCreated = new Date(Date.now() - 60_000).toISOString();
+    let reply;
+    const socket = {
+        connected: true,
+        emit: vi.fn((_event, _payload, callback) => { reply = callback; }),
+    };
+
+    const pending = store.dispatch(checkForNewFiles({ socket }));
+    store.dispatch(markFileBrowserVisited());
+    reply({ success: true, data: { items: [{ created: oldCreated, modified: new Date(Date.now() + 1000).toISOString() }] } });
+    await pending;
+    expect(store.getState().filebrowser.hasNewFiles).toBe(false);
 });
 
 test('late page replies cannot change the selected page or visible files', async () => {

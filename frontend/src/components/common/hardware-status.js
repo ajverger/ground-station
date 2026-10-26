@@ -122,3 +122,77 @@ export const isRotatorWarningStatus = (status) => {
 export const isRigWarningStatus = (_status) => {
     return false;
 };
+
+const NAVIGATION_STATUS_PRIORITY = {
+    motion_unconfirmed: 0,
+    outofbounds: 1,
+    minelevation: 2,
+    slewing: 3,
+    tracking: 4,
+    parked: 5,
+    stopped: 6,
+    connected: 7,
+    disconnected: 8,
+    unknown: 9,
+};
+
+export const orderNavigationStatuses = (statuses) => [...statuses].sort(
+    (left, right) => (NAVIGATION_STATUS_PRIORITY[left] ?? 10) - (NAVIGATION_STATUS_PRIORITY[right] ?? 10)
+);
+
+// The sidebar summarizes the whole fleet, while each target tab describes one tracker.
+// Keep the two hardware types separate so a rotator never hides a rig's state.
+export const selectTrackingNavigationStatus = (state, now = Date.now()) => {
+    const instances = state.trackerInstances?.instances || [];
+    const views = state.targetSatTrack?.trackerViews || {};
+    const online = Boolean(state.dashboard?.connected);
+    const connectedAt = state.dashboard?.connectedAt || 0;
+    const byType = { rotator: new Map(), rig: new Map() };
+
+    instances.forEach((instance) => {
+        const view = views[instance?.tracker_id] || {};
+        const trackingState = view.trackingState || instance?.tracking_state || {};
+        const fresh = online && Boolean(view.hardwareObservedAt)
+            && Number.isFinite(view.hardwareReceivedAt)
+            && view.hardwareReceivedAt >= connectedAt
+            && now - view.hardwareReceivedAt >= 0
+            && now - view.hardwareReceivedAt < 15000;
+
+        [
+            {
+                type: 'rotator',
+                id: resolveAssignedHardwareId(view.selectedRotator, trackingState.rotator_id, instance?.rotator_id),
+                data: view.rotatorData,
+                resolve: resolveRotatorLedStatus,
+            },
+            {
+                type: 'rig',
+                id: resolveAssignedHardwareId(view.selectedRadioRig, trackingState.rig_id, instance?.rig_id),
+                data: view.rigData,
+                resolve: resolveRigLedStatus,
+            },
+        ].forEach(({ type, id, data, resolve }) => {
+            if (!hasAssignedHardwareId(id)) return;
+            const status = fresh ? resolve({ [`${type}Id`]: id, [`${type}Data`]: data,
+                trackingState: view.confirmedTrackingState || trackingState }) : 'unknown';
+            const key = String(id);
+            const previous = byType[type].get(key);
+            // One device can appear in several tracker slots; use its newest live report.
+            if (!previous || (fresh && !previous.fresh)
+                || (fresh === previous.fresh && (view.hardwareReceivedAt || 0) > previous.receivedAt)) {
+                byType[type].set(key, { status, fresh, receivedAt: view.hardwareReceivedAt || 0 });
+            }
+        });
+    });
+
+    return Object.fromEntries(Object.entries(byType).map(([type, devices]) => {
+        const counts = {};
+        devices.forEach(({ status }) => { counts[status] = (counts[status] || 0) + 1; });
+        const statuses = orderNavigationStatuses(Object.keys(counts));
+        return [type, {
+            status: statuses[0] || 'none',
+            counts,
+            assignedCount: devices.size,
+        }];
+    }));
+};

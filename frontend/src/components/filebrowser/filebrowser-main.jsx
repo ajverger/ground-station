@@ -377,12 +377,12 @@ export default function FileBrowserMain() {
     );
     const [purgeDialogOpen, setPurgeDialogOpen] = useState(false);
 
-    // Mark file browser as visited after list refreshes while on the page
+    // Opening the page acknowledges earlier files. Leaving acknowledges any
+    // additions received while the user was viewing the live library.
     useEffect(() => {
-        if (!filesLoading) {
-            dispatch(markFileBrowserVisited());
-        }
-    }, [dispatch, filesLoading, files.length]);
+        dispatch(markFileBrowserVisited());
+        return () => dispatch(markFileBrowserVisited());
+    }, [dispatch]);
 
     // Relative card labels and active recording durations depend on the clock,
     // not on a new inventory response. Tick at each minute boundary so an open

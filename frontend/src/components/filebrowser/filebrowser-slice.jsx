@@ -52,6 +52,24 @@ export const fetchFiles = createAsyncThunk(
     }
 );
 
+// The sidebar notification must inspect the newest library item independently
+// of the user's current File Browser filters, sort order, and page.
+export const checkForNewFiles = createAsyncThunk(
+    'filebrowser/checkForNewFiles',
+    async ({ socket }, { rejectWithValue }) => {
+        try {
+            return await callLibrary(socket, 'filebrowser.query', {
+                sortBy: 'created',
+                sortOrder: 'desc',
+                page: 1,
+                pageSize: 1,
+            });
+        } catch (error) {
+            return rejectWithValue(error.message || 'Failed to check for new files');
+        }
+    }
+);
+
 export const fetchFileDetails = createAsyncThunk(
     'filebrowser/fetchFileDetails',
     async ({ socket, id }, { rejectWithValue }) => {
@@ -438,7 +456,7 @@ const fileBrowserSlice = createSlice({
             state.lastVisitedTimestamp = new Date().toISOString();
             state.hasNewFiles = false;
         },
-        // Set new files indicator (called when new files are added via socket events)
+        // Keep this action available for direct notification updates.
         setHasNewFiles: (state, action) => {
             state.hasNewFiles = action.payload;
         },
@@ -497,17 +515,16 @@ const fileBrowserSlice = createSlice({
             state.total = action.payload.total || 0;
             state.page = action.payload.page || state.page;
             state.diskUsage = action.payload.diskUsage || { total: 0, used: 0, available: 0 };
-
-            // Check if there are new files since last visit
-            if (state.lastVisitedTimestamp && state.files.length > 0) {
-                const lastVisited = new Date(state.lastVisitedTimestamp);
-                const hasNew = state.files.some(file => {
-                    const fileTimestamp = file.modified || file.created || file.start_time;
-                    if (!fileTimestamp) return false;
-                    const fileDate = new Date(fileTimestamp);
-                    return !Number.isNaN(fileDate.getTime()) && fileDate > lastVisited;
-                });
-                state.hasNewFiles = hasNew;
+        });
+        builder.addCase(checkForNewFiles.fulfilled, (state, action) => {
+            const newest = action.payload?.items?.[0];
+            const createdAt = Date.parse(newest?.created || newest?.start_time || '');
+            const lastVisitedAt = Date.parse(state.lastVisitedTimestamp || '');
+            // Only a confirmed newer item may turn the badge on. Older or
+            // delayed checks must not clear a pending notification.
+            if (Number.isFinite(createdAt) && Number.isFinite(lastVisitedAt)
+                && createdAt > lastVisitedAt) {
+                state.hasNewFiles = true;
             }
         });
         builder.addCase(fetchFiles.rejected, (state, action) => {

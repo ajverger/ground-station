@@ -64,7 +64,7 @@ import {
     updateGnssFixLifecycleFromStatus,
     updateGnssFixLifecycleFromOutput,
 } from '../components/waterfall/gnss-slice.jsx';
-import { fetchFiles, setPlaybackRecordings, purgeProgressUpdated, purgeFinished } from '../components/filebrowser/filebrowser-slice.jsx';
+import { checkForNewFiles, fetchFiles, setPlaybackRecordings, purgeProgressUpdated, purgeFinished } from '../components/filebrowser/filebrowser-slice.jsx';
 import {
     setConnected,
     setConnecting,
@@ -181,6 +181,7 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
             if (!isCurrentSession(generation, socketId)) return;
             await initializeAppData(socket);
             if (!isCurrentSession(generation, socketId)) return;
+            store.dispatch(checkForNewFiles({ socket }));
             await dispatch(fetchTrackerCommands({socket}));
         };
 
@@ -379,6 +380,7 @@ export const useSocketEventHandlers = (socket, enabled = true) => {
                 page: browser.page,
                 pageSize: browser.pageSize,
             }));
+            store.dispatch(checkForNewFiles({ socket }));
         };
 
         // Legacy producer events still announce that storage changed.  Listing

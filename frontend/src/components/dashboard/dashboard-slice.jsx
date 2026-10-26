@@ -26,6 +26,7 @@ const rigsSlice = createSlice({
         isEditing: false,
         connecting: true,
         connected: false,
+        connectedAt: null,
         disconnected: false,
         reconnecting: false,
         reConnectAttempt: 0,
@@ -44,8 +45,13 @@ const rigsSlice = createSlice({
         setConnecting: (state, action) => {
             state.connecting = action.payload;
         },
-        setConnected: (state, action) => {
-            state.connected = action.payload;
+        setConnected: {
+            reducer: (state, action) => {
+                if (action.payload && (!state.connected || !state.connectedAt)) state.connectedAt = action.meta.connectedAt;
+                if (!action.payload) state.connectedAt = null;
+                state.connected = action.payload;
+            },
+            prepare: (connected) => ({ payload: connected, meta: { connectedAt: Date.now() } }),
         },
         setDisconnected: (state, action) => {
             state.disconnected = action.payload;
@@ -74,6 +80,7 @@ const rigsSlice = createSlice({
             // "connected + data loaded" flags from the previous session.
             state.connecting = true;
             state.connected = false;
+            state.connectedAt = null;
             state.disconnected = false;
             state.reconnecting = false;
             state.reConnectAttempt = 0;
