@@ -68,6 +68,8 @@ describe('mapOutputsToRows', () => {
 
         expect(mapOutputsToRows([loraOutput])[0]).toMatchObject({
             from: '(TinyGS Sat)',
+            fromIsSatelliteHint: true,
+            fromSatelliteNoradId: 12345,
             to: '-',
             satelliteName: 'TinyGS Sat',
             noradId: 12345,
@@ -76,7 +78,7 @@ describe('mapOutputsToRows', () => {
         expect(mapOutputsToRows([{
             ...loraOutput,
             output: { ...loraOutput.output, callsigns: { from: 'DECODED', to: 'GROUND' } },
-        }])[0]).toMatchObject({ from: 'DECODED', to: 'GROUND' });
+        }])[0]).toMatchObject({ from: 'DECODED', fromIsSatelliteHint: false, fromSatelliteNoradId: null, to: 'GROUND' });
         expect(mapOutputsToRows([{
             ...loraOutput,
             decoder_type: 'gmsk',

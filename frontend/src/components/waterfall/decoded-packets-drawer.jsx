@@ -18,7 +18,7 @@
  */
 
 import React, { startTransition, useMemo, useRef, useState, useEffect, useCallback } from 'react';
-import { Box, Typography, Chip, Tooltip, useTheme, IconButton, Dialog, DialogTitle, DialogContent, DialogActions, Button, Alert } from '@mui/material';
+import { Box, Typography, Chip, Tooltip, Link, CircularProgress, useTheme, IconButton, Dialog, DialogTitle, DialogContent, DialogActions, Button, Alert } from '@mui/material';
 import { DataGrid, gridClasses } from '@mui/x-data-grid';
 import { useSelector, useDispatch, useStore } from 'react-redux';
 import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
@@ -28,6 +28,7 @@ import FolderOpenIcon from '@mui/icons-material/FolderOpen';
 import DeleteIcon from '@mui/icons-material/Delete';
 import CloseIcon from '@mui/icons-material/Close';
 import CheckIcon from '@mui/icons-material/Check';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { alpha, darken, lighten } from '@mui/material/styles';
 import { setPacketsDrawerOpen, setPacketsDrawerHeight } from './waterfall-slice';
 import { getDecoderDisplay, getModulationDisplay, ModulationType } from '../../constants/modulations';
@@ -40,6 +41,8 @@ import { toast } from 'react-toastify';
 import { useUserTimeSettings } from '../../hooks/useUserTimeSettings.jsx';
 import { formatTime } from '../../utils/date-time.js';
 import { useTranslation } from 'react-i18next';
+import { SatelliteInfoDialog } from '../satellites/satellite-info-page.jsx';
+import { fetchSatellite } from '../satellites/satellite-slice.jsx';
 
 // Time formatter component that updates without causing re-renders
 const TimeFormatter = React.memo(function TimeFormatter({ value, nowMs, timezone, locale }) {
@@ -200,6 +203,10 @@ export const mapOutputsToRows = (outputs, rowLimit = DEFAULT_DRAWER_ROW_LIMIT) =
             const fromCallsign = isImage ? '-'
                 : (decodedFrom || (isLora && lockedSatelliteName ? `(${lockedSatelliteName})` : '-'));
             const toCallsign = isImage ? '-' : (output.output.callsigns?.to || '-');
+            const fromIsSatelliteHint = Boolean(isLora && !decodedFrom && lockedSatelliteName);
+            const fromSatelliteNoradId = fromIsSatelliteHint
+                ? output.output.satellite?.norad_id
+                : null;
 
             // Image modes have their own label; LoRa rows expand the live decoder configuration.
             const parameters = isImage
@@ -215,6 +222,8 @@ export const mapOutputsToRows = (outputs, rowLimit = DEFAULT_DRAWER_ROW_LIMIT) =
                 satelliteName: satelliteName,
                 noradId: noradId,
                 from: fromCallsign,
+                fromIsSatelliteHint,
+                fromSatelliteNoradId,
                 to: toCallsign,
                 decoderType: output.decoder_type,
                 parser: output.output.telemetry?.parser || '-',
@@ -241,6 +250,7 @@ export const mapOutputsToRows = (outputs, rowLimit = DEFAULT_DRAWER_ROW_LIMIT) =
 
 const DecodedPacketsDrawer = React.memo(function DecodedPacketsDrawer({ embedded = false }) {
     const { t } = useTranslation('waterfall');
+    const { t: satellitesT } = useTranslation('satellites');
     const theme = useTheme();
     const dispatch = useDispatch();
     const store = useStore();
@@ -259,6 +269,12 @@ const DecodedPacketsDrawer = React.memo(function DecodedPacketsDrawer({ embedded
     const [telemetryDialogOpen, setTelemetryDialogOpen] = useState(false);
     const [telemetryFile, setTelemetryFile] = useState(null);
     const [telemetryMetadata, setTelemetryMetadata] = useState(null);
+
+    // Satellite details use the NORAD ID saved with the packet, so a later
+    // change to the VFO lock cannot redirect an earlier packet's link.
+    const [satelliteInfo, setSatelliteInfo] = useState(null);
+    const [loadingNoradId, setLoadingNoradId] = useState(null);
+    const latestSatelliteRequestRef = useRef(0);
 
     // SSTV image viewer state
     const [sstvDialogOpen, setSstvDialogOpen] = useState(false);
@@ -332,6 +348,44 @@ const DecodedPacketsDrawer = React.memo(function DecodedPacketsDrawer({ embedded
             setTimeNowMs(Date.now());
         }, 5000);
         return () => clearInterval(timer);
+    }, []);
+
+    useEffect(() => () => {
+        latestSatelliteRequestRef.current += 1;
+    }, []);
+
+    const handleOpenSatelliteInfo = useCallback(async (noradId) => {
+        const parsedNoradId = Number(noradId);
+        if (!socket || !Number.isInteger(parsedNoradId) || parsedNoradId <= 0) return;
+
+        // A slower lookup must not replace the details from a later click.
+        const requestId = ++latestSatelliteRequestRef.current;
+        setLoadingNoradId(parsedNoradId);
+        setSatelliteInfo(null);
+        try {
+            const response = await dispatch(fetchSatellite({ socket, noradId: parsedNoradId })).unwrap();
+            if (latestSatelliteRequestRef.current !== requestId) return;
+            if (Number(response?.details?.norad_id) !== parsedNoradId) {
+                throw new Error('Satellite details unavailable');
+            }
+            setSatelliteInfo({
+                ...response.details,
+                position: response.position || null,
+                transmitters: response.transmitters || [],
+            });
+        } catch {
+            if (latestSatelliteRequestRef.current === requestId) {
+                toast.error(satellitesT('satellite_database.failed_load'));
+            }
+        } finally {
+            if (latestSatelliteRequestRef.current === requestId) setLoadingNoradId(null);
+        }
+    }, [dispatch, satellitesT, socket]);
+
+    const handleCloseSatelliteInfo = useCallback(() => {
+        latestSatelliteRequestRef.current += 1;
+        setSatelliteInfo(null);
+        setLoadingNoradId(null);
     }, []);
 
     // Handler to open telemetry viewer
@@ -456,6 +510,50 @@ const DecodedPacketsDrawer = React.memo(function DecodedPacketsDrawer({ embedded
         );
     }, [theme, vfoColors]);
 
+    const renderFromCell = useCallback((params, compact) => {
+        const noradId = Number(params.row.fromSatelliteNoradId);
+        const hasSatelliteLink = Number.isInteger(noradId) && noradId > 0;
+        const fromLabel = hasSatelliteLink ? (
+            <Link
+                component="button"
+                type="button"
+                variant={compact ? 'caption' : 'body2'}
+                underline="hover"
+                aria-busy={loadingNoradId === noradId}
+                onClick={(event) => {
+                    event.stopPropagation();
+                    void handleOpenSatelliteInfo(noradId);
+                }}
+                sx={{ fontWeight: compact ? 600 : undefined, textAlign: 'left', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            >
+                {params.value}
+                {loadingNoradId === noradId && <CircularProgress size={10} sx={{ ml: 0.5 }} />}
+            </Link>
+        ) : compact ? (
+            <Typography variant="caption" sx={{ color: 'primary.main', fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {params.value}
+            </Typography>
+        ) : (
+            <span style={{ color: theme.palette.primary.main, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{params.value}</span>
+        );
+
+        if (!params.row.fromIsSatelliteHint) return fromLabel;
+
+        const tooltipText = t('decoded_packets_drawer.inferred_satellite_identity', {
+            defaultValue: 'Satellite identity was inferred from the locked transmitter you selected because this packet has no callsign.',
+        });
+        return (
+            <Box component="span" sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5, minWidth: 0, maxWidth: '100%' }}>
+                {fromLabel}
+                <Tooltip title={tooltipText}>
+                    <Box component="span" tabIndex={0} aria-label={tooltipText} sx={{ display: 'inline-flex', flexShrink: 0, color: 'text.disabled', cursor: 'help' }}>
+                        <InfoOutlinedIcon sx={{ fontSize: 13 }} />
+                    </Box>
+                </Tooltip>
+            </Box>
+        );
+    }, [handleOpenSatelliteInfo, loadingNoradId, t, theme]);
+
     const columns = useMemo(() => ([
         {
             field: 'timestamp',
@@ -469,11 +567,7 @@ const DecodedPacketsDrawer = React.memo(function DecodedPacketsDrawer({ embedded
             headerName: 'From',
             minWidth: 100,
             flex: 1,
-            renderCell: (params) => (
-                <span style={{ color: theme.palette.primary.main }}>
-                    {params.value}
-                </span>
-            )
+            renderCell: (params) => renderFromCell(params, false)
         },
         {
             field: 'to',
@@ -612,7 +706,7 @@ const DecodedPacketsDrawer = React.memo(function DecodedPacketsDrawer({ embedded
                 </>
             )
         },
-    ]), [theme, handleOpenTelemetry, handleDeletePacket, renderVfoCell, timeNowMs, timezone, locale]);
+    ]), [theme, handleOpenTelemetry, handleDeletePacket, renderVfoCell, renderFromCell, timeNowMs, timezone, locale]);
 
     const liveColumns = useMemo(() => ([
         {
@@ -627,11 +721,7 @@ const DecodedPacketsDrawer = React.memo(function DecodedPacketsDrawer({ embedded
             headerName: 'From',
             minWidth: 100,
             flex: 1,
-            renderCell: (params) => (
-                <Typography variant="caption" sx={{ color: 'primary.main', fontWeight: 600 }}>
-                    {params.value}
-                </Typography>
-            )
+            renderCell: (params) => renderFromCell(params, true)
         },
         {
             field: 'to',
@@ -760,7 +850,7 @@ const DecodedPacketsDrawer = React.memo(function DecodedPacketsDrawer({ embedded
                 </>
             )
         },
-    ]), [handleOpenTelemetry, handleDeletePacket, renderVfoCell, timeNowMs, timezone, locale]);
+    ]), [handleOpenTelemetry, handleDeletePacket, renderVfoCell, renderFromCell, timeNowMs, timezone, locale]);
 
     const displayedColumns = liveMode ? liveColumns : columns;
 
@@ -964,6 +1054,12 @@ const DecodedPacketsDrawer = React.memo(function DecodedPacketsDrawer({ embedded
                 onClose={() => setTelemetryDialogOpen(false)}
                 file={telemetryFile}
                 metadata={telemetryMetadata}
+            />
+
+            <SatelliteInfoDialog
+                open={Boolean(satelliteInfo)}
+                onClose={handleCloseSatelliteInfo}
+                satelliteData={satelliteInfo}
             />
 
             {/* SSTV Image Viewer Dialog */}
